@@ -38,7 +38,7 @@ export class Presence {
   @JoinColumn({ name: 'booth_id' })
   booth: Booth;
 
-  @CreateDateColumn({ type: 'timestamp' })
+  @Column({ type: 'timestamp', nullable: true }) // <-- Usamos @Column tradicional
   check_in_at: Date;
 
   @Column({ type: 'timestamp', nullable: true })

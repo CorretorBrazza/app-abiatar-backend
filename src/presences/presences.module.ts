@@ -5,12 +5,13 @@ import { PresencesService } from './presences.service';
 import { PresencesController } from './presences.controller';
 import { Presence } from './entities/presence.entity';
 import { Booth } from '../booths/entities/booth.entity';
-import { AuthModule } from '../auth/auth.module'; // Importa para herdar o JwtAuthGuard
+import { DeadManLog } from './entities/dead-man-log.entity'; // Importa a nova entidade de logs
+import { AuthModule } from '../auth/auth.module';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Presence, Booth]),
-    AuthModule, // <-- IMPORTANTE para que o JwtAuthGuard funcione
+    TypeOrmModule.forFeature([Presence, Booth, DeadManLog]), // <-- REGISTRADO DEADMANLOG AQUI
+    AuthModule,
   ],
   controllers: [PresencesController],
   providers: [PresencesService],

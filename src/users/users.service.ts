@@ -1,0 +1,153 @@
+// src/users/users.service.ts
+import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository, MoreThan } from 'typeorm';
+import * as bcrypt from 'bcryptjs';
+import * as crypto from 'crypto';
+
+import { User } from './user.entity';
+import { OnboardingLink } from './entities/onboarding-link.entity';
+import { RegisterBrokerDto } from './dto/register-broker.dto';
+import { ApproveBrokerDto } from './dto/approve-broker.dto';
+
+@Injectable()
+export class UsersService {
+  constructor(
+    @InjectRepository(User)
+    private userRepository: Repository<User>,
+
+    @InjectRepository(OnboardingLink)
+    private linkRepository: Repository<OnboardingLink>,
+  ) {}
+
+  // 1. Gerente gera um novo link de onboarding com validade de 7 dias
+  async createOnboardingLink(managerId: string, tenantId: string) {
+    const token = crypto.randomBytes(16).toString('hex'); // Gera um token aleatório seguro
+    const validUntil = new Date();
+    validUntil.setDate(validUntil.getDate() + 7); // Válido por 7 dias (conforme escopo)
+
+    const link = this.linkRepository.create({
+      tenant_id: tenantId,
+      manager_id: managerId,
+      token: token,
+      valid_until: validUntil,
+    });
+
+    const savedLink = await this.linkRepository.save(link);
+
+    // Retorna a URL personalizada do Gerente com o token único
+    return {
+      token: savedLink.token,
+      valid_until: savedLink.valid_until,
+      onboarding_url: `app.abiatar.com.br/cadastro/${savedLink.token}`,
+    };
+  }
+
+  // 2. Corretor se cadastra sozinho através do link (Rota Pública - Sem Token JWT)
+  async registerBroker(dto: RegisterBrokerDto) {
+    // Valida se o link de onboarding existe e ainda está dentro do prazo
+    const link = await this.linkRepository.findOne({
+      where: { 
+        token: dto.token, 
+        valid_until: MoreThan(new Date()),
+        is_used: false 
+      },
+    });
+
+    if (!link) {
+      throw new BadRequestException('O link de cadastro é inválido, expirou ou já foi utilizado.');
+    }
+
+// Validação de unicidade do Nome de Guerra RESTRITA a esta construtora
+    const existingNomeGuerra = await this.userRepository.findOne({
+      where: { 
+        nome_guerra: dto.nomeGuerra, 
+        tenant_id: link.tenant_id // <-- Filtro adicionado para garantir unicidade apenas nesta empresa!
+      },
+    });
+    if (existingNomeGuerra) {
+      throw new BadRequestException(`O nome de guerra '${dto.nomeGuerra}' já está em uso por outro corretor.`);
+    }
+
+    // Validação de e-mail único
+    const existingEmail = await this.userRepository.findOne({ where: { email: dto.email } });
+    if (existingEmail) {
+      throw new BadRequestException('Este e-mail de usuário já está cadastrado.');
+    }
+
+    // Criptografa a senha do corretor
+    const salt = await bcrypt.genSalt(10);
+    const passwordHashed = await bcrypt.hash(dto.passwordHash, salt);
+
+    // Cria o registro do Corretor (Status: Inativo, aguardando aprovação do Gerente)
+    const broker = this.userRepository.create({
+      tenant_id: link.tenant_id,
+      manager_id: link.manager_id,
+      name: dto.name,
+      nome_guerra: dto.nomeGuerra,
+      email: dto.email,
+      password_hash: passwordHashed,
+      creci: dto.creci,
+      role: 'corretor_level_3',
+      status: 'inactive', // Fica inativo até que o gerente aprove
+    });
+
+    await this.userRepository.save(broker);
+
+    return {
+      message: 'Seu cadastro foi enviado! Aguarde a aprovação do seu gerente para acessar o sistema.',
+    };
+  }
+
+  // 3. Gerente lista os corretores pendentes de aprovação da sua equipe
+  async findPendingApprovals(managerId: string, tenantId: string): Promise<User[]> {
+    return this.userRepository.find({
+      where: { 
+        manager_id: managerId, 
+        tenant_id: tenantId, 
+        status: 'inactive' 
+      },
+      order: { name: 'ASC' },
+    });
+  }
+
+  // 4. Gerente aprova o corretor e define a faixa de carência (7, 15 ou 30 dias)
+  async approveBroker(brokerId: string, dto: ApproveBrokerDto, managerId: string, tenantId: string) {
+    const broker = await this.userRepository.findOne({
+      where: { id: brokerId, manager_id: managerId, tenant_id: tenantId },
+    });
+
+    if (!broker) {
+      throw new NotFoundException('Corretor não encontrado ou não pertence à sua gerência.');
+    }
+
+    if (broker.status !== 'inactive') {
+      throw new BadRequestException('Este corretor já foi aprovado ou está ativo.');
+    }
+
+    // Calcula a data exata em que a carência de leads vai expirar
+    const carenciaExpiration = new Date();
+    carenciaExpiration.setDate(carenciaExpiration.getDate() + dto.carenciaDays);
+
+    // Atualiza o status do corretor para 'grace_period' (Carência ativa)
+    broker.status = 'grace_period';
+    broker.carencia_ends_at = carenciaExpiration;
+
+    await this.userRepository.save(broker);
+
+    return {
+      message: `Corretor '${broker.nome_guerra}' aprovado com sucesso! Carência definida por ${dto.carenciaDays} dias.`,
+      carencia_ends_at: broker.carencia_ends_at,
+    };
+  }
+
+  // 5. Gerente lista os corretores ativos e em carência do seu time
+  async findTeam(managerId: string, tenantId: string): Promise<User[]> {
+    return this.userRepository.createQueryBuilder('user')
+      .where('user.manager_id = :managerId', { managerId })
+      .andWhere('user.tenant_id = :tenantId', { tenantId })
+      .andWhere('user.status IN (:...statuses)', { statuses: ['active', 'grace_period'] })
+      .orderBy('user.name', 'ASC')
+      .getMany();
+  }
+}

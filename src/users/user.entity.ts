@@ -6,11 +6,13 @@ import {
   CreateDateColumn, 
   UpdateDateColumn, 
   ManyToOne, 
-  JoinColumn 
+  JoinColumn,
+  Unique // <-- ADICIONE "Unique" AQUI
 } from 'typeorm';
 import { Tenant } from '../tenants/tenant.entity';
 
 @Entity('users')
+@Unique(['tenant_id', 'nome_guerra']) // <-- ADICIONE ESTA UNICIDADE COMPOSTA
 export class User {
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -28,10 +30,10 @@ export class User {
   @Column({ length: 150 })
   name: string;
 
-  @Column({ length: 50, unique: true })
+  @Column({ length: 50 }) // <-- REMOVA O "unique: true" DAQUI
   nome_guerra: string;
 
-  @Column({ length: 100, unique: true })
+  @Column({ length: 100, unique: true }) // O e-mail continua único globalmente
   email: string;
 
   @Column({ length: 255 })

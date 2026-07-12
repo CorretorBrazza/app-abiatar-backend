@@ -1,5 +1,5 @@
 // src/presences/presences.controller.ts
-import { Controller, Post, Get, Body, UseGuards } from '@nestjs/common';
+import { Controller, Post, Get, Body, UseGuards, Param } from '@nestjs/common';
 import { PresencesService } from './presences.service';
 import { CheckInDto } from './dto/check-in.dto';
 import { PingResponseDto } from './dto/ping-response.dto';
@@ -55,5 +55,29 @@ export class PresencesController {
   @Post('test-trigger-pings')
   async triggerPingsManual() {
     return this.presencesService.processPresencesAndPings();
+  }
+
+  // 1. Rota de Auditoria Mensal do Corretor (GET /presences/statistics/broker/:brokerId) [6]
+  @Get('statistics/broker/:brokerId')
+  @UseGuards(JwtAuthGuard)
+  async getBrokerStatistics(
+    @Param('brokerId') brokerId: string,
+    @Body('month') month: number,
+    @Body('year') year: number,
+    @TenantId() tenantId: string,
+  ) {
+    const activeMonth = month || new Date().getMonth() + 1;
+    const activeYear = year || new Date().getFullYear();
+    return this.presencesService.getBrokerMonthlyStatistics(brokerId, tenantId, activeMonth, activeYear);
+  }
+
+  // 2. Rota de Score de Plantão / Mapa de Calor de Demanda (GET /presences/statistics/booth-demand/:boothId) [6]
+  @Get('statistics/booth-demand/:boothId')
+  @UseGuards(JwtAuthGuard)
+  async getBoothDemandHeatmap(
+    @Param('boothId') boothId: string,
+    @TenantId() tenantId: string,
+  ) {
+    return this.presencesService.getBoothDemandHeatmap(boothId, tenantId);
   }
 }

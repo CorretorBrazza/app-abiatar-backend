@@ -16,7 +16,8 @@ import { DeadManLog } from './presences/entities/dead-man-log.entity';
 import { PresencesModule } from './presences/presences.module';
 import { Message } from './messages/entities/message.entity';
 import { MessageRecipient } from './messages/entities/message-recipient.entity';
-import { MessagesModule } from './messages/messages.module'; // <-- ADICIONE ESTA LINHA
+import { MessagesModule } from './messages/messages.module';
+import { NotificationsModule } from './notifications/notifications.module'; // <-- ADICIONE ESTA LINHA
 
 @Module({
   imports: [
@@ -42,7 +43,8 @@ import { MessagesModule } from './messages/messages.module'; // <-- ADICIONE EST
     BoothsModule,
     UsersModule,
     PresencesModule,
-    MessagesModule, // <-- ADICIONE ESTA LINHA AO ARRAY
+    MessagesModule,
+    NotificationsModule, // <-- ADICIONE ESTA LINHA AO ARRAY
   ],
 })
 export class AppModule {}

@@ -16,7 +16,7 @@ export class BoothsService {
     private wifiRepository: Repository<BoothWifi>,
   ) {}
 
-  // 1. Cadastra um novo plantão de vendas com seus respectivos Wi-Fis
+  // 1. Cadastra um novo plantão de vendas com seus respectivos Wi-Fis [7]
   async create(dto: CreateBoothDto, tenantId: string): Promise<Booth> {
     // Cria o registro do Plantão vinculado ao tenant
     const booth = this.boothRepository.create({
@@ -25,12 +25,14 @@ export class BoothsService {
       address: dto.address,
       latitude: dto.latitude,
       longitude: dto.longitude,
-      gps_radius: dto.gps_radius || 100, // Padrão de 100m se não enviado
+      gps_radius: dto.gps_radius || 100,
+      min_brokers_required: dto.min_brokers_required || 2, // [6]
+      manager_id: dto.managerId || null, // [7]
     });
 
     const savedBooth = await this.boothRepository.save(booth);
 
-    // Se houver Wi-Fis enviados, salva-os vinculados a este plantão
+    // Se houver Wi-Fis enviados, salva-os vinculados a este plantão [7]
     if (dto.wifis && dto.wifis.length > 0) {
       const wifiEntities = dto.wifis.map((ssid) =>
         this.wifiRepository.create({
@@ -42,20 +44,20 @@ export class BoothsService {
       await this.wifiRepository.save(wifiEntities);
     }
 
-    // Retorna o plantão já com as suas redes Wi-Fi associadas
+    // Retorna o plantão já com as suas redes Wi-Fi associadas [7]
     return this.findOne(savedBooth.id, tenantId);
   }
 
-  // 2. Retorna todos os plantões cadastrados daquela construtora específica
+  // 2. Retorna todos os plantões cadastrados daquela construtora específica [7]
   async findAll(tenantId: string): Promise<Booth[]> {
     return this.boothRepository.find({
       where: { tenant_id: tenantId },
-      relations: { wifis: true }, // Traz junto as redes Wi-Fi associadas
+      relations: { wifis: true },
       order: { name: 'ASC' },
     });
   }
 
-  // 3. Busca um único plantão por ID, validando se pertence ao tenant solicitante
+  // 3. Busca um único plantão por ID, validando se pertence ao tenant solicitante [7]
   async findOne(id: string, tenantId: string): Promise<Booth> {
     const booth = await this.boothRepository.findOne({
       where: { id: id, tenant_id: tenantId },
@@ -69,9 +71,9 @@ export class BoothsService {
     return booth;
   }
 
-  // 4. Remove um plantão de vendas (as redes Wi-Fi associadas caem em cascata no banco)
+  // 4. Remove um plantão de vendas (as redes Wi-Fi associadas caem em cascata no banco) [7]
   async remove(id: string, tenantId: string): Promise<{ message: string }> {
-    const booth = await this.findOne(id, tenantId); // Valida se o plantão existe e é do tenant
+    const booth = await this.findOne(id, tenantId);
     await this.boothRepository.remove(booth);
     return { message: 'Plantão de vendas e redes Wi-Fi removidos com sucesso.' };
   }

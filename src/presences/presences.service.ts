@@ -9,6 +9,8 @@ import { Booth } from '../booths/entities/booth.entity';
 import { DeadManLog } from './entities/dead-man-log.entity';
 import { CheckInDto } from './dto/check-in.dto';
 import { PingResponseDto } from './dto/ping-response.dto';
+import { Message } from '../messages/entities/message.entity'; // <-- ADICIONE ESTA LINHA
+import { MessageRecipient } from '../messages/entities/message-recipient.entity'; // <-- ADICIONE ESTA LINHA
 
 @Injectable()
 export class PresencesService {
@@ -21,6 +23,12 @@ export class PresencesService {
 
     @InjectRepository(DeadManLog)
     private logRepository: Repository<DeadManLog>,
+
+    @InjectRepository(Message) // <-- ADICIONE ESTA INJEÇÃO
+    private messageRepository: Repository<Message>,
+
+    @InjectRepository(MessageRecipient) // <-- ADICIONE ESTA INJEÇÃO
+    private recipientRepository: Repository<MessageRecipient>,
   ) {}
 
   // 1. Algoritmo Privado de Haversine (Cálculo de Distância Geográfica)
@@ -145,6 +153,9 @@ export class PresencesService {
     activePresence.status = 'completed';
 
     const savedPresence = await this.presenceRepository.save(activePresence);
+
+    // DISPARA O ALERTA PREDITIVO DE COBERTURA BAIXA NA SAÍDA DO CORRETOR [6]
+    await this.checkAndNotifyLowCoverage(activePresence.booth_id, tenantId);
 
     return {
       message: 'Check-out realizado com sucesso! Turno finalizado.',
@@ -380,6 +391,119 @@ export class PresencesService {
       eligible,
       accumulated,
       required,
+    };
+  }
+
+  // 10. ALERTA PREDITIVO DE COBERTURA BAIXA: Verifica e notifica o gerente do plantão [6]
+  private async checkAndNotifyLowCoverage(boothId: string, tenantId: string): Promise<void> {
+    // 1. Busca os dados do plantão na nuvem
+    const booth = await this.boothRepository.findOne({
+      where: { id: boothId, tenant_id: tenantId },
+    });
+
+    if (!booth || !booth.manager_id) return; // Se não há gerente configurado, ignora
+
+    // 2. Conta quantos corretores estão online neste exato momento no plantão [8]
+    const onlineBrokersCount = await this.presenceRepository.count({
+      where: { booth_id: boothId, tenant_id: tenantId, status: 'online' },
+    });
+
+    // 3. Se a quantidade atual for menor do que o mínimo exigido pela Diretoria: dispara o alerta! [6]
+    if (onlineBrokersCount < booth.min_brokers_required) {
+      console.log(`[ALERTA PREDITIVO] Plantão '${booth.name}' está com baixa cobertura: apenas ${onlineBrokersCount} corretor(es) ativo(s).`);
+
+      // 4. Cria um comunicado de urgência automático na tabela de mensagens para o Gerente responsável [12, 13]
+      const alertMessage = this.messageRepository.create({
+        tenant_id: tenantId,
+        sender_id: booth.manager_id, // Enviado em nome do próprio sistema para ele
+        title: `⚠️ ALERTA DE COBERTURA BAIXA: Plantão ${booth.name}`,
+        content: `O plantão de vendas '${booth.name}' está operando abaixo da capacidade mínima permitida de corretores. Atualmente, há apenas ${onlineBrokersCount} corretor(es) ativo(s). Por favor, verifique a escala imediatamente.`,
+        is_urgent: true, // Marcado como urgente (confirmação obrigatória) [13]
+      });
+
+      const savedMessage = await this.messageRepository.save(alertMessage);
+
+      // 5. Encaminha para a caixa de entrada do Gerente do plantão [12]
+      const recipient = this.recipientRepository.create({
+        tenant_id: tenantId,
+        message_id: savedMessage.id,
+        recipient_id: booth.manager_id,
+      });
+
+      await this.recipientRepository.save(recipient);
+      // HOOK FUTURO: Disparar notificação Push Real (FCM) no celular do gerente [6, 18]
+    }
+  }
+
+  // 11. Relatório mensal de % de presença do corretor vs. períodos disponíveis [6]
+  async getBrokerMonthlyStatistics(brokerId: string, tenantId: string, month: number, year: number) {
+    // Define a data de início e fim do mês selecionado
+    const startOfMonth = new Date(year, month - 1, 1, 0, 0, 0, 0);
+    const endOfMonth = new Date(year, month, 0, 23, 59, 59, 999);
+
+    // Conta quantos períodos o corretor completou com sucesso no mês
+    const completedPeriodsCount = await this.presenceRepository.count({
+      where: {
+        broker_id: brokerId,
+        tenant_id: tenantId,
+        status: 'completed',
+        check_in_at: MoreThan(startOfMonth), // (Tratado simplificadamente no BETWEEN)
+      },
+    });
+
+    // Filtro adicional de intervalo de data nativo via QueryBuilder para garantir precisão
+    const completedPresences = await this.presenceRepository.createQueryBuilder('presence')
+      .where('presence.broker_id = :brokerId', { brokerId })
+      .andWhere('presence.tenant_id = :tenantId', { tenantId })
+      .andWhere('presence.status = :status', { status: 'completed' })
+      .andWhere('presence.check_in_at BETWEEN :start AND :end', { start: startOfMonth, end: endOfMonth })
+      .getMany();
+
+    const completedPeriodsWeightSum = completedPresences.reduce((sum, presence) => sum + presence.period_weight, 0);
+
+    // Meta padrão de mercado: Considerando 20 dias úteis no mês (1 período por dia) [9]
+    const availablePeriodsGoal = 20; 
+
+    // Calcula a porcentagem de assiduidade real
+    const presencePercentage = Math.round((completedPeriodsWeightSum / availablePeriodsGoal) * 100);
+
+    return {
+      brokerId,
+      month,
+      year,
+      completedPeriods: completedPresences.length,
+      completedPeriodsWeightSum,
+      monthlyGoal: availablePeriodsGoal,
+      presencePercentage: presencePercentage > 100 ? 100 : presencePercentage, // Limita a 100%
+    };
+  }
+
+  // 12. Algoritmo de Score de Plantão: Retorna o mapa de calor de demanda por dia e hora [6]
+  async getBoothDemandHeatmap(boothId: string, tenantId: string) {
+    // Executa uma agregação avançada de banco de dados extraindo Dia da Semana e Hora de Entrada
+    const demandData = await this.presenceRepository.createQueryBuilder('presence')
+      .select('EXTRACT(DOW FROM presence.check_in_at)', 'day_of_week') // 0 = Domingo, 1 = Segunda, etc.
+      .addSelect('EXTRACT(HOUR FROM presence.check_in_at)', 'hour') // Faixa de horário de 0h a 23h
+      .addSelect('COUNT(presence.id)', 'check_in_count') // Quantidade de check-ins ocorridos
+      .where('presence.booth_id = :boothId', { boothId })
+      .andWhere('presence.tenant_id = :tenantId', { tenantId })
+      .groupBy('day_of_week')
+      .addGroupBy('hour')
+      .orderBy('day_of_week', 'ASC')
+      .addOrderBy('hour', 'ASC')
+      .getRawMany();
+
+    // Mapeia e higieniza os dados numéricos do Postgres para o formato JSON correto
+    const heatmap = demandData.map((row) => ({
+      dayOfWeek: parseInt(row.day_of_week, 10),
+      hour: parseInt(row.hour, 10),
+      checkInCount: parseInt(row.check_in_count, 10),
+    }));
+
+    return {
+      boothId,
+      message: 'Mapa de calor de demanda histórica do plantão carregado com sucesso.',
+      heatmap,
     };
   }
 }

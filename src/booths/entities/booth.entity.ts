@@ -10,6 +10,7 @@ import {
   OneToMany 
 } from 'typeorm';
 import { Tenant } from '../../tenants/tenant.entity';
+import { User } from '../../users/user.entity';
 import { BoothWifi } from './booth-wifi.entity';
 
 @Entity('booths')
@@ -38,6 +39,16 @@ export class Booth {
 
   @Column({ default: 100 })
   gps_radius: number; // Raio em metros
+
+  @Column({ default: 2 })
+  min_brokers_required: number; // Cobertura mínima exigida para o plantão [6]
+
+  @Column({ type: 'uuid', nullable: true })
+  manager_id: string | null; // <-- AJUSTADO PARA "string | null" para tipagem estrita
+
+  @ManyToOne(() => User, { onDelete: 'SET NULL', nullable: true })
+  @JoinColumn({ name: 'manager_id' })
+  manager: User | null; // <-- AJUSTADO PARA "User | null" para tipagem estrita
 
   @CreateDateColumn()
   created_at: Date;

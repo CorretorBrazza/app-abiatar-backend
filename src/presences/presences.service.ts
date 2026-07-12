@@ -50,6 +50,9 @@ export class PresencesService {
 
   // 2. Realiza o Check-in com validação por Dupla Camada (GPS ou Wi-Fi)
   async checkIn(dto: CheckInDto, brokerId: string, tenantId: string) {
+
+  
+
     // A. VALIDAÇÃO DE ELEGIBILIDADE DE FIM DE SEMANA [9]
     const eligibility = await this.checkWeekendEligibility(brokerId, tenantId);
     if (!eligibility.eligible) {
@@ -58,6 +61,7 @@ export class PresencesService {
         `Check-in bloqueado para este ${dayName}. Para trabalhar no fim de semana, é necessário acumular no mínimo ${eligibility.required} períodos de Segunda a Sexta. Você acumulou apenas ${eligibility.accumulated} períodos nesta semana.`,
       );
     }
+    
 
     // B. Verifica se o corretor já possui um check-in ativo ("online") no momento
     const activePresence = await this.presenceRepository.findOne({

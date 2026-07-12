@@ -1,7 +1,7 @@
 // src/app.module.ts
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
-import { ScheduleModule } from '@nestjs/schedule'; // <-- ADICIONE ESTA LINHA
+import { ScheduleModule } from '@nestjs/schedule';
 
 import { Tenant } from './tenants/tenant.entity';
 import { User } from './users/user.entity';
@@ -12,16 +12,29 @@ import { BoothsModule } from './booths/booths.module';
 import { OnboardingLink } from './users/entities/onboarding-link.entity';
 import { UsersModule } from './users/users.module';
 import { Presence } from './presences/entities/presence.entity';
-import { DeadManLog } from './presences/entities/dead-man-log.entity'; // <-- ADICIONE ESTA LINHA
+import { DeadManLog } from './presences/entities/dead-man-log.entity';
 import { PresencesModule } from './presences/presences.module';
+import { Message } from './messages/entities/message.entity';
+import { MessageRecipient } from './messages/entities/message-recipient.entity';
+import { MessagesModule } from './messages/messages.module'; // <-- ADICIONE ESTA LINHA
 
 @Module({
   imports: [
-    ScheduleModule.forRoot(), // <-- ADICIONE ESTA LINHA para habilitar as tarefas agendadas em segundo plano
+    ScheduleModule.forRoot(),
     TypeOrmModule.forRoot({
       type: 'postgres',
       url: process.env.DATABASE_URL,
-      entities: [Tenant, User, Booth, BoothWifi, OnboardingLink, Presence, DeadManLog], // <-- ADICIONE "DeadManLog" AQUI
+      entities: [
+        Tenant, 
+        User, 
+        Booth, 
+        BoothWifi, 
+        OnboardingLink, 
+        Presence, 
+        DeadManLog, 
+        Message, 
+        MessageRecipient
+      ],
       synchronize: true,
       ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
     }),
@@ -29,6 +42,7 @@ import { PresencesModule } from './presences/presences.module';
     BoothsModule,
     UsersModule,
     PresencesModule,
+    MessagesModule, // <-- ADICIONE ESTA LINHA AO ARRAY
   ],
 })
 export class AppModule {}

@@ -1,0 +1,149 @@
+// src/messages/messages.service.ts
+import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository, In, IsNull } from 'typeorm'; // <-- ADICIONADO "IsNull" AQUI
+
+import { Message } from './entities/message.entity';
+import { MessageRecipient } from './entities/message-recipient.entity';
+import { User } from '../users/user.entity';
+import { CreateMessageDto } from './dto/create-message.dto';
+
+@Injectable()
+export class MessagesService {
+  constructor(
+    @InjectRepository(Message)
+    private messageRepository: Repository<Message>,
+
+    @InjectRepository(MessageRecipient)
+    private recipientRepository: Repository<MessageRecipient>,
+
+    @InjectRepository(User)
+    private userRepository: Repository<User>,
+  ) {}
+
+  // 1. Envia um comunicado oficial roteando os destinatários de forma dinâmica por escopo [12]
+  async createMessage(dto: CreateMessageDto, senderId: string, tenantId: string) {
+    // A. Cria e salva o registro master da Mensagem
+    const message = this.messageRepository.create({
+      tenant_id: tenantId,
+      sender_id: senderId,
+      title: dto.title,
+      content: dto.content,
+      is_urgent: dto.isUrgent || false,
+    });
+
+    const savedMessage = await this.messageRepository.save(message);
+
+    let recipientUsers: User[] = [];
+
+    // B. MOTOR DE ROTEAMENTO: Identifica os destinatários pelo Escopo do DTO [12]
+    if (dto.scope === 'all_brokers') {
+      recipientUsers = await this.userRepository.find({
+        where: { tenant_id: tenantId, role: 'corretor_level_3' },
+      });
+    } else if (dto.scope === 'all_managers') {
+      recipientUsers = await this.userRepository.find({
+        where: { tenant_id: tenantId, role: 'gerencia_level_2' },
+      });
+    } else if (dto.scope === 'specific_team') {
+      if (!dto.targetManagerId) {
+        throw new BadRequestException('Para enviar a uma equipe específica, o ID do gerente é obrigatório.');
+      }
+      recipientUsers = await this.userRepository.find({
+        where: [
+          { id: dto.targetManagerId, tenant_id: tenantId },
+          { manager_id: dto.targetManagerId, tenant_id: tenantId }
+        ],
+      });
+    } else if (dto.scope === 'individual') {
+      if (!dto.individualRecipientIds || dto.individualRecipientIds.length === 0) {
+        throw new BadRequestException('Para envios individuais, pelo menos um ID de destinatário é obrigatório.');
+      }
+      recipientUsers = await this.userRepository.find({
+        where: { id: In(dto.individualRecipientIds), tenant_id: tenantId },
+      });
+    }
+
+    if (recipientUsers.length === 0) {
+      throw new BadRequestException('Nenhum destinatário elegível encontrado para o envio deste comunicado.');
+    }
+
+    // C. Salva os registros individuais de recebimento na tabela cruzada para cada usuário
+    const recipientEntities = recipientUsers.map((user) =>
+      this.recipientRepository.create({
+        tenant_id: tenantId,
+        message_id: savedMessage.id,
+        recipient_id: user.id,
+      }),
+    );
+
+    await this.recipientRepository.save(recipientEntities);
+
+    return {
+      message: 'Comunicado oficial enviado e roteado com sucesso!',
+      messageId: savedMessage.id,
+      totalRecipients: recipientUsers.length,
+    };
+  }
+
+  // 2. Busca a Caixa de Entrada (Inbox) do usuário logado (omitindo mensagens excluídas) [12]
+  async getMyInbox(recipientId: string, tenantId: string) {
+    return this.recipientRepository.find({
+      where: { 
+        recipient_id: recipientId, 
+        tenant_id: tenantId,
+        deleted_at: IsNull() // <-- AJUSTADO PARA O FORMATO CORRETO DO TYPEORM 0.3+
+      },
+      relations: { 
+        message: { sender: true }
+      },
+      order: { created_at: 'DESC' },
+    });
+  }
+
+  // 3. Registra a Confirmação de Leitura pelo destinatário [13]
+  async markAsRead(messageId: string, recipientId: string, tenantId: string) {
+    const recipientRecord = await this.recipientRepository.findOne({
+      where: { message_id: messageId, recipient_id: recipientId, tenant_id: tenantId },
+    });
+
+    if (!recipientRecord) {
+      throw new NotFoundException('Mensagem não localizada na sua caixa de entrada.');
+    }
+
+    if (recipientRecord.read_at) {
+      return { message: 'Mensagem já marcada como lida anteriormente.' };
+    }
+
+    recipientRecord.read_at = new Date();
+    await this.recipientRepository.save(recipientRecord);
+
+    return {
+      message: 'Leitura confirmada com sucesso!',
+      readAt: recipientRecord.read_at,
+    };
+  }
+
+  // 4. Exclusão individual lógica da mensagem pelo usuário (Soft-delete) [12, 13]
+  async deleteMessage(messageId: string, recipientId: string, tenantId: string) {
+    const recipientRecord = await this.recipientRepository.findOne({
+      where: { message_id: messageId, recipient_id: recipientId, tenant_id: tenantId },
+      relations: { message: true }
+    });
+
+    if (!recipientRecord) {
+      throw new NotFoundException('Mensagem não localizada na sua caixa de entrada.');
+    }
+
+    if (recipientRecord.message.is_urgent && !recipientRecord.read_at) {
+      throw new BadRequestException('Esta é uma mensagem urgente. Confirme a leitura antes de excluí-la.');
+    }
+
+    recipientRecord.deleted_at = new Date();
+    await this.recipientRepository.save(recipientRecord);
+
+    return {
+      message: 'Mensagem removida da sua caixa de entrada com sucesso.',
+    };
+  }
+}

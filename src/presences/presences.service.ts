@@ -42,6 +42,16 @@ export class PresencesService {
 
   // 2. Realiza o Check-in com validação por Dupla Camada (GPS ou Wi-Fi)
   async checkIn(dto: CheckInDto, brokerId: string, tenantId: string) {
+    // A. VALIDAÇÃO DE ELEGIBILIDADE DE FIM DE SEMANA [9]
+    const eligibility = await this.checkWeekendEligibility(brokerId, tenantId);
+    if (!eligibility.eligible) {
+      const dayName = new Date().getDay() === 6 ? 'Sábado' : 'Domingo';
+      throw new BadRequestException(
+        `Check-in bloqueado para este ${dayName}. Para trabalhar no fim de semana, é necessário acumular no mínimo ${eligibility.required} períodos de Segunda a Sexta. Você acumulou apenas ${eligibility.accumulated} períodos nesta semana.`,
+      );
+    }
+
+    // B. Verifica se o corretor já possui um check-in ativo ("online") no momento
     const activePresence = await this.presenceRepository.findOne({
       where: { broker_id: brokerId, tenant_id: tenantId, status: 'online' },
     });
@@ -312,6 +322,64 @@ export class PresencesService {
       processedPresences: activePresences.length,
       pingsGenerated,
       brokersSuspended,
+    };
+  }
+
+  // 8. Retorna o total de períodos acumulados (pesos somados) de Segunda a Sexta da semana atual [9]
+  private async getAccumulatedPeriodsForCurrentWeek(brokerId: string, tenantId: string): Promise<number> {
+    const now = new Date();
+    const currentDay = now.getDay(); // 0 = Domingo, 1 = Segunda, ..., 6 = Sábado
+    
+    // Calcula o início da Segunda-feira da semana atual (00:00:00)
+    const mondayOffset = currentDay === 0 ? -6 : 1 - currentDay; // Ajuste se for Domingo
+    const startOfWeek = new Date(now);
+    startOfWeek.setDate(now.getDate() + mondayOffset);
+    startOfWeek.setHours(0, 0, 0, 0);
+
+    // Calcula o final da Sexta-feira da semana atual (23:59:59)
+    const endOfFriday = new Date(startOfWeek);
+    endOfFriday.setDate(startOfWeek.getDate() + 4); // Segunda + 4 dias = Sexta
+    endOfFriday.setHours(23, 59, 59, 999);
+
+    // Busca todas as presenças concluídas ("completed") no intervalo de segunda a sexta desta semana
+    const presences = await this.presenceRepository.createQueryBuilder('presence')
+      .where('presence.broker_id = :brokerId', { brokerId })
+      .andWhere('presence.tenant_id = :tenantId', { tenantId })
+      .andWhere('presence.status = :status', { status: 'completed' })
+      .andWhere('presence.check_in_at BETWEEN :start AND :end', { start: startOfWeek, end: endOfFriday })
+      .getMany();
+
+    // Soma o peso de cada período completado (para suportar pesos dobrados em feriados) [9]
+    const totalPeriods = presences.reduce((sum, presence) => sum + presence.period_weight, 0);
+
+    return totalPeriods;
+  }
+
+  // 9. Valida a elegibilidade do corretor para check-in de fim de semana [9]
+  private async checkWeekendEligibility(brokerId: string, tenantId: string): Promise<{ eligible: boolean; accumulated: number; required: number }> {
+    const now = new Date();
+    const dayOfWeek = now.getDay(); // 0 = Domingo, 6 = Sábado
+
+    // Se for dia de semana (Segunda a Sexta), o check-in é sempre elegível
+    if (dayOfWeek >= 1 && dayOfWeek <= 5) {
+      return { eligible: true, accumulated: 0, required: 0 };
+    }
+
+    const accumulated = await this.getAccumulatedPeriodsForCurrentWeek(brokerId, tenantId);
+    let required = 0;
+
+    if (dayOfWeek === 6) {
+      required = 5; // Sábado exige no mínimo 5 períodos [9]
+    } else if (dayOfWeek === 0) {
+      required = 6; // Domingo exige no mínimo 6 períodos [9]
+    }
+
+    const eligible = accumulated >= required;
+
+    return {
+      eligible,
+      accumulated,
+      required,
     };
   }
 }

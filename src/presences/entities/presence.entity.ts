@@ -54,6 +54,9 @@ export class Presence {
   })
   status: string;
 
+  @Column({ default: 1 })
+  period_weight: number; // Peso do período (ex: 1 para turnos normais, 2 para feriados) [9]
+
   @CreateDateColumn()
   created_at: Date;
 

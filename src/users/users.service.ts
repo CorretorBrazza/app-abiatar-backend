@@ -1,9 +1,10 @@
 // src/users/users.service.ts
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, MoreThan } from 'typeorm';
+import { Repository, MoreThan, LessThanOrEqual } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
+import { Cron, CronExpression } from '@nestjs/schedule';
 
 import { User } from './user.entity';
 import { OnboardingLink } from './entities/onboarding-link.entity';
@@ -149,5 +150,44 @@ export class UsersService {
       .andWhere('user.status IN (:...statuses)', { statuses: ['active', 'grace_period'] })
       .orderBy('user.name', 'ASC')
       .getMany();
+  }
+
+  // 6. Motor Agendador Cron: Roda automaticamente todas as noites à meia-noite [10, 18]
+  @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
+  async handleCarenciaExpirationCron() {
+    console.log('[CRON] Iniciando verificação de expiração de carências de corretores...');
+    await this.processCarenciaExpirations();
+  }
+
+  // 7. Método Auxiliar para processar as carências vencidas (Usado pelo Cron e pela rota de testes) [10]
+  async processCarenciaExpirations() {
+    const now = new Date();
+
+    // Busca todos os corretores com carência ativa (status: 'grace_period') e cuja data de expiração já venceu (menor ou igual a hoje) [10]
+    const expiredBrokers = await this.userRepository.find({
+      where: {
+        status: 'grace_period',
+        carencia_ends_at: LessThanOrEqual(now), // carencia_ends_at <= agora
+      },
+    });
+
+    let activatedCount = 0;
+
+    for (const broker of expiredBrokers) {
+      // Altera o status para ativo [10]
+      broker.status = 'active';
+      
+      await this.userRepository.save(broker);
+      activatedCount++;
+
+      console.log(`[CRON] Carência encerrada para o corretor '${broker.nome_guerra}'. Usuário ativado!`);
+      // HOOK FUTURO: Disparar notificação Push ("Você está habilitado a receber leads!") [10]
+      // HOOK FUTURO: Habilitar o corretor no CVCRM via API [10]
+    }
+
+    return {
+      processedBrokers: expiredBrokers.length,
+      activatedCount,
+    };
   }
 }

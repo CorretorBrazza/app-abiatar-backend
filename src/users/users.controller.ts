@@ -51,4 +51,10 @@ export class UsersController {
   async findTeam(@Param('managerId') managerId: string, @TenantId() tenantId: string) {
     return this.usersService.findTeam(managerId, tenantId);
   }
+
+  // ROTA EXCLUSIVA DE TESTES (PÚBLICA): Força o encerramento de carências e ativação imediata [10]
+  @Post('test-trigger-carencia')
+  async triggerCarenciaManual() {
+    return this.usersService.processCarenciaExpirations();
+  }
 }

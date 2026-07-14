@@ -57,4 +57,12 @@ export class UsersController {
   async triggerCarenciaManual() {
     return this.usersService.processCarenciaExpirations();
   }
+  // Adicione esta rota dentro da classe UsersController, em src/users/users.controller.ts
+
+  // Rota para o Gestor de Leads consultar a fila de distribuição ao vivo (ROTA PROTEGIDA) [6]
+  @Get('leads-queue')
+  @UseGuards(JwtAuthGuard)
+  async getRealTimeLeadsQueue(@TenantId() tenantId: string) {
+    return this.usersService.getRealTimeLeadsQueue(tenantId);
+  }
 }

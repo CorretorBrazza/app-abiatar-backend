@@ -190,4 +190,54 @@ export class UsersService {
       activatedCount,
     };
   }
+  // Adicione este método dentro de UsersService, em src/users/users.service.ts
+
+   // 8. Retorna a Fila de Leads ativa em tempo real de todos os corretores do tenant [6, 10]
+  async getRealTimeLeadsQueue(tenantId: string) {
+    // A. Busca todos os corretores (Nível 3) cadastrados e inativados da construtora [10]
+    const brokers = await this.userRepository.find({
+      where: { tenant_id: tenantId, role: 'corretor_level_3' },
+      order: { name: 'ASC' },
+    });
+
+    const queue: any[] = []; // <-- ADICIONADO "any[]" para aceitar inserções em modo estrito
+
+    for (const broker of brokers) {
+      // B. Busca se o corretor possui um gerente associado para exibir o nome de guerra dele [10]
+      let managerName = 'Sem Gerente';
+      if (broker.manager_id) {
+        const manager = await this.userRepository.findOne({ where: { id: broker.manager_id } });
+        if (manager) {
+          managerName = manager.nome_guerra;
+        }
+      }
+
+      // C. Busca se o corretor está fisicamente presente em algum plantão online neste segundo [8]
+      const activePresence = await this.userRepository.manager.getRepository('presences').findOne({
+        where: { broker_id: broker.id, tenant_id: tenantId, status: 'online' },
+        relations: { booth: true }, // <-- AJUSTADO PARA FORMATO OBJETO DO TYPEORM 0.3+
+      }) as any;
+
+      const isPresent = !!activePresence;
+      const isOutOfCarencia = broker.status === 'active'; // Ativo = fora da carência [10]
+
+      // D. A REGRA DE OURO: Só está habilitado se estiver presente E fora da carência [8, 10]
+      const isHabilitado = isPresent && isOutOfCarencia;
+
+      queue.push({
+        brokerId: broker.id,
+        nomeGuerra: broker.nome_guerra,
+        managerName: managerName,
+        statusPresenca: isPresent ? `🟢 ONLINE (${activePresence.booth.name})` : '🔴 OFFLINE',
+        statusCarencia: broker.status === 'grace_period' ? '🟡 EM CARÊNCIA' : (isOutOfCarencia ? '🟢 ATIVO' : '🔴 INATIVO'),
+        isHabilitado: isHabilitado ? '🟢 HABILITADO' : '🔴 BLOQUEADO',
+        dataAtualizacao: new Date().toLocaleDateString('pt-BR'),
+      });
+    }
+
+    return {
+      message: 'Fila de distribuição de leads em tempo real carregada.',
+      queue,
+    };
+  }
 }

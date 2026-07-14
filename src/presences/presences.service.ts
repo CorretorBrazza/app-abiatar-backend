@@ -170,7 +170,7 @@ export class PresencesService {
     };
   }
 
-  // 4. Busca se o corretor logado já possui uma sessão de check-in ativa (PWA Session Recovery)
+  // 4. Busca se o corretor logado já possui uma sessão de check-in ativa (PWA Session Recovery) [8]
   async getCurrentPresence(brokerId: string, tenantId: string) {
     const activePresence = await this.presenceRepository.findOne({
       where: { broker_id: brokerId, tenant_id: tenantId, status: 'online' },
@@ -184,6 +184,12 @@ export class PresencesService {
       };
     }
 
+    // BUSCA SE EXISTE UM PING PENDENTE NA NUVEM PARA ESSE CORRETOR RESPONDER [8]
+    const pendingPing = await this.logRepository.findOne({
+      where: { presence_id: activePresence.id, response_status: 'pending' },
+      order: { sent_at: 'DESC' },
+    });
+
     return {
       hasActiveSession: true,
       presence: {
@@ -192,10 +198,10 @@ export class PresencesService {
         boothName: activePresence.booth.name,
         checkInAt: activePresence.check_in_at,
         status: activePresence.status,
+        pendingPingId: pendingPing ? pendingPing.id : null, // <-- RETORNA O ID DO PING SE EXISTIR! [8]
       },
     };
   }
-
   // 5. Corretor responde voluntariamente ao Ping de Confirmação periódico [8]
   async respondToPing(dto: PingResponseDto, brokerId: string, tenantId: string) {
     // Busca o log de ping pendente emitido para o inquilino

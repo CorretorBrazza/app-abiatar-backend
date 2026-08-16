@@ -10,7 +10,8 @@ import { DeadManLog } from './entities/dead-man-log.entity';
 import { CheckInDto } from './dto/check-in.dto';
 import { PingResponseDto } from './dto/ping-response.dto';
 import { Message } from '../messages/entities/message.entity'; // <-- ADICIONE ESTA LINHA
-import { MessageRecipient } from '../messages/entities/message-recipient.entity'; // <-- ADICIONE ESTA LINHA
+import { MessageRecipient } from '../messages/entities/message-recipient.entity';
+import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class PresencesService {
@@ -27,8 +28,9 @@ export class PresencesService {
     @InjectRepository(Message) // <-- ADICIONE ESTA INJEÇÃO
     private messageRepository: Repository<Message>,
 
-    @InjectRepository(MessageRecipient) // <-- ADICIONE ESTA INJEÇÃO
+    @InjectRepository(MessageRecipient)
     private recipientRepository: Repository<MessageRecipient>,
+    private notificationsService: NotificationsService,
   ) {}
 
   // 1. Algoritmo Privado de Haversine (Cálculo de Distância Geográfica)
@@ -441,7 +443,13 @@ export class PresencesService {
       });
 
       await this.recipientRepository.save(recipient);
-      // HOOK FUTURO: Disparar notificação Push Real (FCM) no celular do gerente [6, 18]
+      void this.notificationsService.sendToUser(
+        booth.manager_id,
+        tenantId,
+        `Alerta de cobertura: ${booth.name}`,
+        `O plantão está com ${onlineBrokersCount} corretor(es) online, abaixo do mínimo exigido.`,
+        { type: 'low_coverage', messageId: savedMessage.id, boothId: booth.id },
+      );
     }
   }
 

@@ -7,6 +7,7 @@ import { Message } from './entities/message.entity';
 import { MessageRecipient } from './entities/message-recipient.entity';
 import { User } from '../users/user.entity';
 import { CreateMessageDto } from './dto/create-message.dto';
+import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class MessagesService {
@@ -19,6 +20,7 @@ export class MessagesService {
 
     @InjectRepository(User)
     private userRepository: Repository<User>,
+    private notificationsService: NotificationsService,
   ) {}
 
   // 1. Envia um comunicado oficial roteando os destinatários de forma dinâmica por escopo [12]
@@ -78,6 +80,13 @@ export class MessagesService {
     );
 
     await this.recipientRepository.save(recipientEntities);
+    void this.notificationsService.sendToUsers(
+      recipientUsers.map((user) => user.id),
+      tenantId,
+      dto.title,
+      dto.content.slice(0, 240),
+      { type: 'message', messageId: savedMessage.id, urgent: dto.isUrgent || false },
+    );
 
     return {
       message: 'Comunicado oficial enviado e roteado com sucesso!',

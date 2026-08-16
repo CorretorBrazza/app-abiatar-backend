@@ -1,5 +1,10 @@
 // src/users/dto/approve-broker.dto.ts
+import { IsIn, IsInt } from 'class-validator';
+import { Type } from 'class-transformer';
+
 export class ApproveBrokerDto {
-  // Define o prazo de carência em dias: 7, 15 ou 30 dias (conforme item 6.4 do escopo)
-  carenciaDays: number; 
+  @Type(() => Number)
+  @IsInt()
+  @IsIn([7, 15, 30])
+  carenciaDays: number;
 }

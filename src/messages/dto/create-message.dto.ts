@@ -1,12 +1,28 @@
 // src/messages/dto/create-message.dto.ts
+import { IsArray, IsBoolean, IsIn, IsOptional, IsString, IsUUID, Length } from 'class-validator';
+
 export class CreateMessageDto {
+  @IsString()
+  @Length(1, 150)
   title: string;
+
+  @IsString()
+  @Length(1, 10000)
   content: string;
-  isUrgent?: boolean; // Padrão é falso
-  
-  // Estrutura dinâmica para os destinatários (conforme item 7.1 do escopo) [12]
-  // Pode ser: 'all_brokers', 'all_managers', 'specific_team' (enviar para um gerente e seu time) ou um array de IDs específicos
-  scope: 'all_brokers' | 'all_managers' | 'specific_team' | 'individual'; 
-  targetManagerId?: string; // Usado se escopo for 'specific_team'
-  individualRecipientIds?: string[]; // Usado se escopo for 'individual'
+
+  @IsOptional()
+  @IsBoolean()
+  isUrgent?: boolean;
+
+  @IsIn(['all_brokers', 'all_managers', 'specific_team', 'individual'])
+  scope: 'all_brokers' | 'all_managers' | 'specific_team' | 'individual';
+
+  @IsOptional()
+  @IsUUID()
+  targetManagerId?: string;
+
+  @IsOptional()
+  @IsArray()
+  @IsUUID(undefined, { each: true })
+  individualRecipientIds?: string[];
 }

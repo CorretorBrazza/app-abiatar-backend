@@ -1,7 +1,21 @@
 // src/presences/dto/ping-response.dto.ts
+import { IsLatitude, IsLongitude, IsOptional, IsString, IsUUID, Length } from 'class-validator';
+import { Type } from 'class-transformer';
+
 export class PingResponseDto {
-  pingLogId: string; // ID do ping pendente enviado pelo servidor que ele está respondendo
-  latitude: number; // Coordenada capturada pelo GPS no ato do clique
-  longitude: number; // Coordenada capturada pelo GPS no ato do clique
-  ssid?: string; // SSID do Wi-Fi capturado (opcional) [7]
+  @IsUUID()
+  pingLogId: string;
+
+  @Type(() => Number)
+  @IsLatitude()
+  latitude: number;
+
+  @Type(() => Number)
+  @IsLongitude()
+  longitude: number;
+
+  @IsOptional()
+  @IsString()
+  @Length(1, 100)
+  ssid?: string;
 }

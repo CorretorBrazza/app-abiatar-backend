@@ -1,5 +1,5 @@
 // src/presences/presences.controller.ts
-import { Controller, Post, Get, Body, UseGuards, Param } from '@nestjs/common';
+import { Controller, Post, Get, Body, UseGuards, Param, NotFoundException, Query } from '@nestjs/common';
 import { PresencesService } from './presences.service';
 import { CheckInDto } from './dto/check-in.dto';
 import { PingResponseDto } from './dto/ping-response.dto';
@@ -53,7 +53,11 @@ export class PresencesController {
   // 2. ROTA EXCLUSIVA DE TESTES (PÚBLICA): Força a execução manual do motor de pings [8]
   // (Para que você não precise aguardar os 30 minutos em desenvolvimento)
   @Post('test-trigger-pings')
+  @UseGuards(JwtAuthGuard)
   async triggerPingsManual() {
+    if (process.env.NODE_ENV === 'production') {
+      throw new NotFoundException();
+    }
     return this.presencesService.processPresencesAndPings();
   }
 
@@ -62,12 +66,12 @@ export class PresencesController {
   @UseGuards(JwtAuthGuard)
   async getBrokerStatistics(
     @Param('brokerId') brokerId: string,
-    @Body('month') month: number,
-    @Body('year') year: number,
     @TenantId() tenantId: string,
+    @Query('month') month?: string,
+    @Query('year') year?: string,
   ) {
-    const activeMonth = month || new Date().getMonth() + 1;
-    const activeYear = year || new Date().getFullYear();
+    const activeMonth = month ? Number(month) : new Date().getMonth() + 1;
+    const activeYear = year ? Number(year) : new Date().getFullYear();
     return this.presencesService.getBrokerMonthlyStatistics(brokerId, tenantId, activeMonth, activeYear);
   }
 

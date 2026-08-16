@@ -1,14 +1,38 @@
 // src/auth/dto/register-tenant.dto.ts
+import { IsEmail, IsOptional, IsString, Length, Matches } from 'class-validator';
+
 export class RegisterTenantDto {
-  // Dados do Tenant (Construtora)
+  @IsString()
+  @Length(2, 150)
   tenantName: string;
-  tenantSlug: string; // ex: 'abiatar'
+
+  @IsString()
+  @Length(2, 50)
+  @Matches(/^[a-z0-9-]+$/)
+  tenantSlug: string;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^#[0-9A-Fa-f]{6}$/)
   primaryColor?: string;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^#[0-9A-Fa-f]{6}$/)
   secondaryColor?: string;
 
-  // Dados do Usuário Administrador (Nível 1 - Diretoria)
+  @IsString()
+  @Length(2, 150)
   userName: string;
+
+  @IsString()
+  @Length(2, 50)
   userNomeGuerra: string;
+
+  @IsEmail()
   userEmail: string;
-  userPasswordHash: string; // Senha limpa vinda do app (vamos criptografar no serviço)
+
+  @IsString()
+  @Length(8, 128)
+  userPasswordHash: string;
 }

@@ -1,7 +1,21 @@
 // src/presences/dto/check-in.dto.ts
+import { IsLatitude, IsLongitude, IsOptional, IsString, IsUUID, Length } from 'class-validator';
+import { Type } from 'class-transformer';
+
 export class CheckInDto {
-  boothId: string; // ID do plantão onde o corretor tenta fazer check-in
-  latitude: number; // Capturado pelo GPS do celular
-  longitude: number; // Capturado pelo GPS do celular
-  ssid?: string; // Opcional, enviado se o celular estiver conectado a um Wi-Fi [7]
+  @IsUUID()
+  boothId: string;
+
+  @Type(() => Number)
+  @IsLatitude()
+  latitude: number;
+
+  @Type(() => Number)
+  @IsLongitude()
+  longitude: number;
+
+  @IsOptional()
+  @IsString()
+  @Length(1, 100)
+  ssid?: string;
 }

@@ -36,7 +36,7 @@ import { NotificationsModule } from './notifications/notifications.module'; // <
         Message, 
         MessageRecipient
       ],
-      synchronize: true,
+      synchronize: process.env.NODE_ENV !== 'production' && process.env.TYPEORM_SYNCHRONIZE !== 'false',
       ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
     }),
     AuthModule,

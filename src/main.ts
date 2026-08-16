@@ -28,6 +28,6 @@ async function bootstrap() {
     .map((origin) => origin.trim())
     .filter(Boolean);
   app.enableCors({ origin: allowedOrigins, credentials: false });
-  await app.listen(process.env.PORT || 3000);
+  await app.listen(Number(process.env.PORT) || 3000, '0.0.0.0');
 }
 bootstrap();

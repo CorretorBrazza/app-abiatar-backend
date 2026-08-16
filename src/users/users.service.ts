@@ -10,6 +10,7 @@ import { User } from './user.entity';
 import { OnboardingLink } from './entities/onboarding-link.entity';
 import { RegisterBrokerDto } from './dto/register-broker.dto';
 import { ApproveBrokerDto } from './dto/approve-broker.dto';
+import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
 export class UsersService {
@@ -19,6 +20,7 @@ export class UsersService {
 
     @InjectRepository(OnboardingLink)
     private linkRepository: Repository<OnboardingLink>,
+    private notificationsService: NotificationsService,
   ) {}
 
   // 1. Gerente gera um novo link de onboarding com validade de 7 dias
@@ -135,6 +137,13 @@ export class UsersService {
     broker.carencia_ends_at = carenciaExpiration;
 
     await this.userRepository.save(broker);
+    void this.notificationsService.sendToUser(
+      broker.id,
+      tenantId,
+      'Cadastro aprovado',
+      `Seu cadastro foi aprovado. Sua carência termina em ${carenciaExpiration.toLocaleDateString('pt-BR')}.`,
+      { type: 'broker_approved', brokerId: broker.id, carenciaDays: dto.carenciaDays },
+    );
 
     return {
       message: `Corretor '${broker.nome_guerra}' aprovado com sucesso! Carência definida por ${dto.carenciaDays} dias.`,

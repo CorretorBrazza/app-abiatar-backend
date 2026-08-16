@@ -39,7 +39,7 @@ export class PushDeviceToken {
   @Column({ length: 30, default: 'web' })
   platform: string;
 
-  @Column({ length: 150, nullable: true })
+  @Column({ type: 'varchar', length: 150, nullable: true })
   device_label: string | null;
 
   @Column({ default: true })

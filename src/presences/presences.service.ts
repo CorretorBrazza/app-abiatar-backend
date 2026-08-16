@@ -327,6 +327,13 @@ export class PresencesService {
           await this.presenceRepository.save(presence);
           brokersSuspended++;
           console.log(`[CRON] Presença ${presence.id} suspensa por falta de resposta.`);
+          void this.notificationsService.sendToUser(
+            presence.broker_id,
+            presence.tenant_id,
+            'Presença suspensa',
+            'Não recebemos sua confirmação de presença. O turno foi colocado em pausa.',
+            { type: 'presence_suspended', presenceId: presence.id },
+          );
         }
       } else {
         // Se não há pings pendentes ou o anterior foi respondido, "dispara" um novo ping na nuvem [8]
@@ -338,6 +345,13 @@ export class PresencesService {
         await this.logRepository.save(newPing);
         pingsGenerated++;
         console.log(`[CRON] Novo ping pendente gerado para a presença ${presence.id}.`);
+        void this.notificationsService.sendToUser(
+          presence.broker_id,
+          presence.tenant_id,
+          'Confirme sua presença',
+          'Toque nesta notificação e confirme que você continua no plantão.',
+          { type: 'presence_ping', presenceId: presence.id, pingId: newPing.id },
+        );
       }
     }
 

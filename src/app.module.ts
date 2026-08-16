@@ -17,7 +17,8 @@ import { PresencesModule } from './presences/presences.module';
 import { Message } from './messages/entities/message.entity';
 import { MessageRecipient } from './messages/entities/message-recipient.entity';
 import { MessagesModule } from './messages/messages.module';
-import { NotificationsModule } from './notifications/notifications.module'; // <-- ADICIONE ESTA LINHA
+import { NotificationsModule } from './notifications/notifications.module';
+import { PushDeviceToken } from './notifications/entities/push-device-token.entity';
 
 @Module({
   imports: [
@@ -33,8 +34,9 @@ import { NotificationsModule } from './notifications/notifications.module'; // <
         OnboardingLink, 
         Presence, 
         DeadManLog, 
-        Message, 
-        MessageRecipient
+        Message,
+        MessageRecipient,
+        PushDeviceToken,
       ],
       synchronize: process.env.NODE_ENV !== 'production' && process.env.TYPEORM_SYNCHRONIZE !== 'false',
       ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,

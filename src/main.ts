@@ -8,7 +8,7 @@ import { AppModule } from './app.module';
 
 async function bootstrap() {
   if (process.env.NODE_ENV === 'production') {
-    for (const variable of ['DATABASE_URL', 'JWT_SECRET']) {
+    for (const variable of ['DATABASE_URL', 'JWT_SECRET', 'FIREBASE_SERVICE_ACCOUNT']) {
       if (!process.env[variable]) {
         throw new Error(`Variável obrigatória ausente: ${variable}`);
       }

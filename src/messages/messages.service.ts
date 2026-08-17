@@ -80,7 +80,7 @@ export class MessagesService {
     );
 
     await this.recipientRepository.save(recipientEntities);
-    void this.notificationsService.sendToUsers(
+    const pushSentCount = await this.notificationsService.sendToUsers(
       recipientUsers.map((user) => user.id),
       tenantId,
       dto.title,
@@ -92,6 +92,7 @@ export class MessagesService {
       message: 'Comunicado oficial enviado e roteado com sucesso!',
       messageId: savedMessage.id,
       totalRecipients: recipientUsers.length,
+      pushSentCount,
     };
   }
 

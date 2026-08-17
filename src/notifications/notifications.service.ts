@@ -62,6 +62,21 @@ export class NotificationsService implements OnModuleInit {
     return { id: saved.id, platform: saved.platform, is_active: saved.is_active };
   }
 
+  async listMyDevices(userId: string, tenantId: string) {
+    const devices = await this.pushTokenRepository.find({
+      where: { user_id: userId, tenant_id: tenantId },
+      order: { last_seen_at: 'DESC' },
+    });
+    return devices.map((device) => ({
+      id: device.id,
+      platform: device.platform,
+      is_active: device.is_active,
+      device_label: device.device_label,
+      last_seen_at: device.last_seen_at,
+      token_preview: `${device.token.slice(0, 8)}...${device.token.slice(-6)}`,
+    }));
+  }
+
   async revokeDeviceToken(deviceId: string, userId: string, tenantId: string) {
     const deviceToken = await this.pushTokenRepository.findOne({
       where: { id: deviceId, user_id: userId, tenant_id: tenantId },

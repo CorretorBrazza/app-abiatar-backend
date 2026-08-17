@@ -1,5 +1,5 @@
 // src/notifications/notifications.controller.ts
-import { Controller, Delete, Param, Post, Body, UseGuards } from '@nestjs/common';
+import { Controller, Delete, Get, Param, Post, Body, UseGuards } from '@nestjs/common';
 import { NotificationsService } from './notifications.service';
 import { RegisterPushTokenDto } from './dto/register-push-token.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -18,6 +18,14 @@ export class NotificationsController {
     @TenantId() tenantId: string,
   ) {
     return this.notificationsService.registerDeviceToken(dto, userId, tenantId);
+  }
+
+  @Get('devices/me')
+  async listMyDevices(
+    @CurrentUser('sub') userId: string,
+    @TenantId() tenantId: string,
+  ) {
+    return this.notificationsService.listMyDevices(userId, tenantId);
   }
 
   @Delete('devices/:id')

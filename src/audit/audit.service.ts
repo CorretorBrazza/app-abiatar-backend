@@ -70,6 +70,25 @@ export class AuditService {
     }
   }
 
+  async listForTenant(
+    tenantId: string,
+    options: { page: number; limit: number; action?: string },
+  ) {
+    const page = Math.max(options.page, 1);
+    const limit = Math.min(Math.max(options.limit, 1), 100);
+    const where: { tenant_id: string; action?: string } = { tenant_id: tenantId };
+    if (options.action) where.action = options.action;
+
+    const [data, total] = await this.auditRepository.findAndCount({
+      where,
+      order: { created_at: 'DESC' },
+      skip: (page - 1) * limit,
+      take: limit,
+    });
+
+    return { data, total, page, limit };
+  }
+
   private sanitize(
     value?: Record<string, unknown> | null,
   ): Record<string, unknown> | null {

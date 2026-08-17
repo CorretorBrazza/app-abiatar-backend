@@ -108,6 +108,26 @@ export class BoothsService {
     }));
   }
 
+  async listAssignedToReceptionist(receptionistId: string, tenantId: string) {
+    const assignments = await this.receptionistRepository.find({
+      where: { receptionist_id: receptionistId, tenant_id: tenantId, is_active: true },
+    });
+    if (assignments.length === 0) return [];
+
+    const booths = await this.boothRepository.find({
+      where: assignments.map((assignment) => ({
+        id: assignment.booth_id,
+        tenant_id: tenantId,
+      })),
+      relations: { wifis: true },
+      order: { name: 'ASC' },
+    });
+    return booths.map((booth) => ({
+      ...booth,
+      reception_assignment_id: assignments.find((assignment) => assignment.booth_id === booth.id)?.id,
+    }));
+  }
+
   async listReceptionists(boothId: string, tenantId: string) {
     await this.findOne(boothId, tenantId);
     const assignments = await this.receptionistRepository.find({

@@ -21,6 +21,17 @@ export class BoothsController {
     return this.boothsService.findAll(tenantId);
   }
 
+  @Get('assigned')
+  async findAssigned(
+    @CurrentUser() currentUser: { sub: string; role: string },
+    @TenantId() tenantId: string,
+  ) {
+    if (currentUser.role !== 'recepcao_level_3') {
+      throw new ForbiddenException('Somente a Recepção pode consultar seus plantões atribuídos.');
+    }
+    return this.boothsService.listAssignedToReceptionist(currentUser.sub, tenantId);
+  }
+
   @Post(':boothId/receptionists/:receptionistId')
   async assignReceptionist(
     @Param('boothId') boothId: string,

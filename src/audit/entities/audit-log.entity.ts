@@ -27,25 +27,25 @@ export class AuditLog {
   @Column({ type: 'uuid', nullable: true })
   actor_user_id: string | null;
 
-  @Column({ length: 80, nullable: true })
+  @Column({ type: 'varchar', length: 80, nullable: true })
   actor_role: string | null;
 
-  @Column({ length: 160, nullable: true })
+  @Column({ type: 'varchar', length: 160, nullable: true })
   actor_email_snapshot: string | null;
 
-  @Column({ length: 120, nullable: true })
+  @Column({ type: 'varchar', length: 120, nullable: true })
   session_id: string | null;
 
-  @Column({ length: 120, nullable: true })
+  @Column({ type: 'varchar', length: 120, nullable: true })
   request_id: string | null;
 
-  @Column({ length: 120 })
+  @Column({ type: 'varchar', length: 120 })
   action: string;
 
-  @Column({ length: 80, nullable: true })
+  @Column({ type: 'varchar', length: 80, nullable: true })
   entity_type: string | null;
 
-  @Column({ length: 120, nullable: true })
+  @Column({ type: 'varchar', length: 120, nullable: true })
   entity_id: string | null;
 
   @Column({ type: 'jsonb', nullable: true })
@@ -66,7 +66,7 @@ export class AuditLog {
   @Column({ default: true })
   success: boolean;
 
-  @Column({ length: 120, nullable: true })
+  @Column({ type: 'varchar', length: 120, nullable: true })
   error_code: string | null;
 
   @Column({ type: 'jsonb', nullable: true })

@@ -10,8 +10,10 @@ import { User } from './user.entity';
 import { OnboardingLink } from './entities/onboarding-link.entity';
 import { RegisterBrokerDto } from './dto/register-broker.dto';
 import { CreateManagerDto } from './dto/create-manager.dto';
+import { CreateReceptionistDto } from './dto/create-receptionist.dto';
 import { ApproveBrokerDto } from './dto/approve-broker.dto';
 import { NotificationsService } from '../notifications/notifications.service';
+import { AuditService } from '../audit/audit.service';
 
 @Injectable()
 export class UsersService {
@@ -22,6 +24,7 @@ export class UsersService {
     @InjectRepository(OnboardingLink)
     private linkRepository: Repository<OnboardingLink>,
     private notificationsService: NotificationsService,
+    private auditService: AuditService,
   ) {}
 
   // Cria um gerente somente a partir de uma diretoria autenticada.
@@ -49,6 +52,18 @@ export class UsersService {
       status: 'active',
     });
     const savedManager = await this.userRepository.save(manager);
+    void this.auditService.record({ tenantId }, {
+      action: 'USER_CREATED',
+      entityType: 'USER',
+      entityId: savedManager.id,
+      afterData: {
+        name: savedManager.name,
+        nome_guerra: savedManager.nome_guerra,
+        email: savedManager.email,
+        role: savedManager.role,
+      },
+      metadata: { createdRole: savedManager.role },
+    });
 
     return {
       message: 'Gerente cadastrado com sucesso!',
@@ -58,6 +73,55 @@ export class UsersService {
         nome_guerra: savedManager.nome_guerra,
         email: savedManager.email,
         role: savedManager.role,
+      },
+    };
+  }
+
+  async createReceptionist(dto: CreateReceptionistDto, tenantId: string) {
+    const existingEmail = await this.userRepository.findOne({ where: { email: dto.email } });
+    if (existingEmail) {
+      throw new BadRequestException('Este e-mail de usuário já está cadastrado.');
+    }
+
+    const existingNomeGuerra = await this.userRepository.findOne({
+      where: { nome_guerra: dto.nomeGuerra, tenant_id: tenantId },
+    });
+    if (existingNomeGuerra) {
+      throw new BadRequestException(`O nome de guerra '${dto.nomeGuerra}' já está em uso nesta empresa.`);
+    }
+
+    const passwordHashed = await bcrypt.hash(dto.passwordHash, await bcrypt.genSalt(10));
+    const receptionist = this.userRepository.create({
+      tenant_id: tenantId,
+      name: dto.name,
+      nome_guerra: dto.nomeGuerra,
+      email: dto.email,
+      password_hash: passwordHashed,
+      role: 'recepcao_level_3',
+      status: 'active',
+    });
+    const savedReceptionist = await this.userRepository.save(receptionist);
+    void this.auditService.record({ tenantId }, {
+      action: 'USER_CREATED',
+      entityType: 'USER',
+      entityId: savedReceptionist.id,
+      afterData: {
+        name: savedReceptionist.name,
+        nome_guerra: savedReceptionist.nome_guerra,
+        email: savedReceptionist.email,
+        role: savedReceptionist.role,
+      },
+      metadata: { createdRole: savedReceptionist.role },
+    });
+
+    return {
+      message: 'Recepcionista cadastrada com sucesso!',
+      user: {
+        id: savedReceptionist.id,
+        name: savedReceptionist.name,
+        nome_guerra: savedReceptionist.nome_guerra,
+        email: savedReceptionist.email,
+        role: savedReceptionist.role,
       },
     };
   }

@@ -4,6 +4,7 @@ import { UsersService } from './users.service';
 import { RegisterBrokerDto } from './dto/register-broker.dto';
 import { ApproveBrokerDto } from './dto/approve-broker.dto';
 import { CreateManagerDto } from './dto/create-manager.dto';
+import { CreateReceptionistDto } from './dto/create-receptionist.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { TenantId } from '../auth/decorators/tenant-id.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator'; // (Opcional - criaremos na sequência se necessário, ou usamos request.user)
@@ -37,6 +38,19 @@ export class UsersController {
       throw new ForbiddenException('Apenas a diretoria pode criar gerentes.');
     }
     return this.usersService.createManager(createManagerDto, tenantId);
+  }
+
+  @Post('receptionists')
+  @UseGuards(JwtAuthGuard)
+  async createReceptionist(
+    @Body() createReceptionistDto: CreateReceptionistDto,
+    @CurrentUser() currentUser: { role: string },
+    @TenantId() tenantId: string,
+  ) {
+    if (currentUser.role !== 'diretoria_level_1') {
+      throw new ForbiddenException('Apenas a Diretoria pode criar recepcionistas.');
+    }
+    return this.usersService.createReceptionist(createReceptionistDto, tenantId);
   }
 
   // 1. Corretor se cadastra (ROTA PÚBLICA - Sem Guard de segurança) [10]

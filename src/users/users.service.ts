@@ -9,6 +9,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { User } from './user.entity';
 import { OnboardingLink } from './entities/onboarding-link.entity';
 import { RegisterBrokerDto } from './dto/register-broker.dto';
+import { CreateManagerDto } from './dto/create-manager.dto';
 import { ApproveBrokerDto } from './dto/approve-broker.dto';
 import { NotificationsService } from '../notifications/notifications.service';
 
@@ -22,6 +23,44 @@ export class UsersService {
     private linkRepository: Repository<OnboardingLink>,
     private notificationsService: NotificationsService,
   ) {}
+
+  // Cria um gerente somente a partir de uma diretoria autenticada.
+  async createManager(dto: CreateManagerDto, tenantId: string) {
+    const existingEmail = await this.userRepository.findOne({ where: { email: dto.email } });
+    if (existingEmail) {
+      throw new BadRequestException('Este e-mail de usuário já está cadastrado.');
+    }
+
+    const existingNomeGuerra = await this.userRepository.findOne({
+      where: { nome_guerra: dto.nomeGuerra, tenant_id: tenantId },
+    });
+    if (existingNomeGuerra) {
+      throw new BadRequestException(`O nome de guerra '${dto.nomeGuerra}' já está em uso nesta empresa.`);
+    }
+
+    const passwordHashed = await bcrypt.hash(dto.passwordHash, await bcrypt.genSalt(10));
+    const manager = this.userRepository.create({
+      tenant_id: tenantId,
+      name: dto.name,
+      nome_guerra: dto.nomeGuerra,
+      email: dto.email,
+      password_hash: passwordHashed,
+      role: 'gerencia_level_2',
+      status: 'active',
+    });
+    const savedManager = await this.userRepository.save(manager);
+
+    return {
+      message: 'Gerente cadastrado com sucesso!',
+      user: {
+        id: savedManager.id,
+        name: savedManager.name,
+        nome_guerra: savedManager.nome_guerra,
+        email: savedManager.email,
+        role: savedManager.role,
+      },
+    };
+  }
 
   // 1. Gerente gera um novo link de onboarding com validade de 7 dias
   async createOnboardingLink(managerId: string, tenantId: string) {

@@ -3,6 +3,7 @@ import { Controller, Post, Get, Patch, Body, Param, UseGuards, NotFoundException
 import { UsersService } from './users.service';
 import { RegisterBrokerDto } from './dto/register-broker.dto';
 import { ApproveBrokerDto } from './dto/approve-broker.dto';
+import { CreateManagerDto } from './dto/create-manager.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { TenantId } from '../auth/decorators/tenant-id.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator'; // (Opcional - criaremos na sequência se necessário, ou usamos request.user)
@@ -22,6 +23,20 @@ export class UsersController {
       throw new ForbiddenException('A gerência só pode acessar a própria equipe.');
     }
     return requestedManagerId;
+  }
+
+  // Diretoria cria um gerente dentro do próprio tenant (ROTA PROTEGIDA)
+  @Post('managers')
+  @UseGuards(JwtAuthGuard)
+  async createManager(
+    @Body() createManagerDto: CreateManagerDto,
+    @CurrentUser() currentUser: { sub: string; role: string },
+    @TenantId() tenantId: string,
+  ) {
+    if (currentUser.role !== 'diretoria_level_1') {
+      throw new ForbiddenException('Apenas a diretoria pode criar gerentes.');
+    }
+    return this.usersService.createManager(createManagerDto, tenantId);
   }
 
   // 1. Corretor se cadastra (ROTA PÚBLICA - Sem Guard de segurança) [10]

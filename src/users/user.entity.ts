@@ -44,7 +44,7 @@ export class User {
 
   @Column({
     type: 'enum',
-    enum: ['diretoria_level_1', 'gerencia_level_2', 'corretor_level_3'],
+    enum: ['platform_admin_level_0', 'diretoria_level_1', 'gerencia_level_2', 'recepcao_level_3', 'corretor_level_3'],
     default: 'corretor_level_3',
   })
   role: string;

@@ -4,6 +4,8 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Booth } from './entities/booth.entity';
 import { BoothWifi } from './entities/booth-wifi.entity';
+import { BoothReceptionist } from './entities/booth-receptionist.entity';
+import { User } from '../users/user.entity';
 import { CreateBoothDto } from './dto/create-booth.dto';
 
 @Injectable()
@@ -14,6 +16,12 @@ export class BoothsService {
 
     @InjectRepository(BoothWifi)
     private wifiRepository: Repository<BoothWifi>,
+
+    @InjectRepository(BoothReceptionist)
+    private receptionistRepository: Repository<BoothReceptionist>,
+
+    @InjectRepository(User)
+    private userRepository: Repository<User>,
   ) {}
 
   // 1. Cadastra um novo plantão de vendas com seus respectivos Wi-Fis [7]
@@ -69,6 +77,72 @@ export class BoothsService {
     }
 
     return booth;
+  }
+
+  async assignReceptionist(
+    boothId: string,
+    receptionistId: string,
+    tenantId: string,
+  ): Promise<BoothReceptionist> {
+    await this.findOne(boothId, tenantId);
+    const receptionist = await this.userRepository.findOne({
+      where: { id: receptionistId, tenant_id: tenantId, role: 'recepcao_level_3' },
+    });
+    if (!receptionist) {
+      throw new NotFoundException('Recepcionista não encontrada neste tenant.');
+    }
+
+    const existing = await this.receptionistRepository.findOne({
+      where: { booth_id: boothId, receptionist_id: receptionistId },
+    });
+    if (existing) {
+      existing.is_active = true;
+      return this.receptionistRepository.save(existing);
+    }
+
+    return this.receptionistRepository.save(this.receptionistRepository.create({
+      tenant_id: tenantId,
+      booth_id: boothId,
+      receptionist_id: receptionistId,
+      is_active: true,
+    }));
+  }
+
+  async listReceptionists(boothId: string, tenantId: string) {
+    await this.findOne(boothId, tenantId);
+    const assignments = await this.receptionistRepository.find({
+      where: { booth_id: boothId, tenant_id: tenantId, is_active: true },
+      order: { created_at: 'ASC' },
+    });
+    const users = await this.userRepository.find({
+      where: { tenant_id: tenantId, role: 'recepcao_level_3' },
+    });
+    const byId = new Map(users.map((user) => [user.id, user]));
+    return assignments.map((assignment) => ({
+      ...assignment,
+      receptionist: byId.get(assignment.receptionist_id)
+        ? {
+            id: byId.get(assignment.receptionist_id)!.id,
+            name: byId.get(assignment.receptionist_id)!.name,
+            email: byId.get(assignment.receptionist_id)!.email,
+          }
+        : null,
+    }));
+  }
+
+  async removeReceptionist(
+    boothId: string,
+    receptionistId: string,
+    tenantId: string,
+  ): Promise<{ removed: boolean }> {
+    await this.findOne(boothId, tenantId);
+    const assignment = await this.receptionistRepository.findOne({
+      where: { booth_id: boothId, receptionist_id: receptionistId, tenant_id: tenantId },
+    });
+    if (!assignment) return { removed: false };
+    assignment.is_active = false;
+    await this.receptionistRepository.save(assignment);
+    return { removed: true };
   }
 
   // 4. Remove um plantão de vendas (as redes Wi-Fi associadas caem em cascata no banco) [7]

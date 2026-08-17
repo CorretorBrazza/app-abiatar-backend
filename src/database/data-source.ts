@@ -5,6 +5,7 @@ import { Tenant } from '../tenants/tenant.entity';
 import { User } from '../users/user.entity';
 import { Booth } from '../booths/entities/booth.entity';
 import { BoothWifi } from '../booths/entities/booth-wifi.entity';
+import { BoothReceptionist } from '../booths/entities/booth-receptionist.entity';
 import { OnboardingLink } from '../users/entities/onboarding-link.entity';
 import { Presence } from '../presences/entities/presence.entity';
 import { DeadManLog } from '../presences/entities/dead-man-log.entity';
@@ -13,6 +14,7 @@ import { MessageRecipient } from '../messages/entities/message-recipient.entity'
 import { PushDeviceToken } from '../notifications/entities/push-device-token.entity';
 import { AuditLog } from '../audit/entities/audit-log.entity';
 import { CreateAuditLogs1787000000000 } from './migrations/1787000000000-CreateAuditLogs';
+import { AddReceptionAssignments1787000001000 } from './migrations/1787000001000-AddReceptionAssignments';
 
 export const AppDataSource = new DataSource({
   type: 'postgres',
@@ -22,6 +24,7 @@ export const AppDataSource = new DataSource({
     User,
     Booth,
     BoothWifi,
+    BoothReceptionist,
     OnboardingLink,
     Presence,
     DeadManLog,
@@ -30,7 +33,7 @@ export const AppDataSource = new DataSource({
     PushDeviceToken,
     AuditLog,
   ],
-  migrations: [CreateAuditLogs1787000000000],
+  migrations: [CreateAuditLogs1787000000000, AddReceptionAssignments1787000001000],
   migrationsRun: false,
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
 });

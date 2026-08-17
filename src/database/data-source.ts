@@ -1,0 +1,36 @@
+import 'dotenv/config';
+import 'reflect-metadata';
+import { DataSource } from 'typeorm';
+import { Tenant } from '../tenants/tenant.entity';
+import { User } from '../users/user.entity';
+import { Booth } from '../booths/entities/booth.entity';
+import { BoothWifi } from '../booths/entities/booth-wifi.entity';
+import { OnboardingLink } from '../users/entities/onboarding-link.entity';
+import { Presence } from '../presences/entities/presence.entity';
+import { DeadManLog } from '../presences/entities/dead-man-log.entity';
+import { Message } from '../messages/entities/message.entity';
+import { MessageRecipient } from '../messages/entities/message-recipient.entity';
+import { PushDeviceToken } from '../notifications/entities/push-device-token.entity';
+import { AuditLog } from '../audit/entities/audit-log.entity';
+import { CreateAuditLogs1787000000000 } from './migrations/1787000000000-CreateAuditLogs';
+
+export const AppDataSource = new DataSource({
+  type: 'postgres',
+  url: process.env.DATABASE_URL,
+  entities: [
+    Tenant,
+    User,
+    Booth,
+    BoothWifi,
+    OnboardingLink,
+    Presence,
+    DeadManLog,
+    Message,
+    MessageRecipient,
+    PushDeviceToken,
+    AuditLog,
+  ],
+  migrations: [CreateAuditLogs1787000000000],
+  migrationsRun: false,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+});

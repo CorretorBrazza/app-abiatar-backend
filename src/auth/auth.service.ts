@@ -9,6 +9,7 @@ import { Tenant } from '../tenants/tenant.entity';
 import { User } from '../users/user.entity';
 import { RegisterTenantDto } from './dto/register-tenant.dto';
 import { LoginDto } from './dto/login.dto';
+import { AuditService } from '../audit/audit.service';
 
 @Injectable()
 export class AuthService {
@@ -20,6 +21,7 @@ export class AuthService {
     private userRepository: Repository<User>,
 
     private jwtService: JwtService,
+    private auditService: AuditService,
   ) {}
 
   // 1. Cadastra uma nova Construtora (Tenant) junto com o seu primeiro Administrador
@@ -76,12 +78,31 @@ export class AuthService {
     });
 
     if (!user) {
+      void this.auditService.record({}, {
+        action: 'LOGIN_FAILURE',
+        entityType: 'AUTHENTICATION',
+        success: false,
+        errorCode: 'INVALID_CREDENTIALS',
+        metadata: { email: dto.email },
+      });
       throw new UnauthorizedException('E-mail ou senha incorretos.');
     }
 
     // Compara a senha enviada com a senha criptografada do banco
     const isPasswordValid = await bcrypt.compare(dto.passwordHash, user.password_hash);
     if (!isPasswordValid) {
+      void this.auditService.record({
+        tenantId: user.tenant_id,
+        actorUserId: user.id,
+        actorRole: user.role,
+        actorEmail: user.email,
+      }, {
+        action: 'LOGIN_FAILURE',
+        entityType: 'AUTHENTICATION',
+        entityId: user.id,
+        success: false,
+        errorCode: 'INVALID_CREDENTIALS',
+      });
       throw new UnauthorizedException('E-mail ou senha incorretos.');
     }
 
@@ -89,6 +110,17 @@ export class AuthService {
       where: { id: user.tenant_id },
     });
     if (!tenant) {
+      void this.auditService.record({
+        actorUserId: user.id,
+        actorRole: user.role,
+        actorEmail: user.email,
+      }, {
+        action: 'LOGIN_FAILURE',
+        entityType: 'AUTHENTICATION',
+        entityId: user.id,
+        success: false,
+        errorCode: 'TENANT_NOT_FOUND',
+      });
       throw new UnauthorizedException('E-mail ou senha incorretos.');
     }
 
@@ -101,6 +133,18 @@ export class AuthService {
 
     // Assina o token seguro
     const token = this.jwtService.sign(payload);
+
+    void this.auditService.record({
+      tenantId: user.tenant_id,
+      actorUserId: user.id,
+      actorRole: user.role,
+      actorEmail: user.email,
+    }, {
+      action: 'LOGIN_SUCCESS',
+      entityType: 'AUTHENTICATION',
+      entityId: user.id,
+      metadata: { tenantId: user.tenant_id },
+    });
 
     // Retorna o token de acesso e os dados de estilização dinâmica para o app
     return {

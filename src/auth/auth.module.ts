@@ -6,10 +6,12 @@ import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { Tenant } from '../tenants/tenant.entity';
 import { User } from '../users/user.entity';
+import { AuditModule } from '../audit/audit.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([Tenant, User]),
+    AuditModule,
     JwtModule.register({
       secret: process.env.JWT_SECRET,
       signOptions: { expiresIn: '15m' }, // O Token expira em 15 minutos por segurança

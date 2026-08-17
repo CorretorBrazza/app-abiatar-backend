@@ -21,6 +21,8 @@ import { MessageRecipient } from './messages/entities/message-recipient.entity';
 import { MessagesModule } from './messages/messages.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { PushDeviceToken } from './notifications/entities/push-device-token.entity';
+import { AuditLog } from './audit/entities/audit-log.entity';
+import { AuditModule } from './audit/audit.module';
 
 @Module({
   controllers: [AppController],
@@ -41,6 +43,7 @@ import { PushDeviceToken } from './notifications/entities/push-device-token.enti
         Message,
         MessageRecipient,
         PushDeviceToken,
+        AuditLog,
       ],
       synchronize: process.env.NODE_ENV !== 'production' && process.env.TYPEORM_SYNCHRONIZE !== 'false',
       ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
@@ -51,6 +54,7 @@ import { PushDeviceToken } from './notifications/entities/push-device-token.enti
     PresencesModule,
     MessagesModule,
     NotificationsModule, // <-- ADICIONE ESTA LINHA AO ARRAY
+    AuditModule,
   ],
 })
 export class AppModule {}

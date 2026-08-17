@@ -69,10 +69,10 @@ export class AuthService {
 
   // 2. Realiza o login, valida a senha e assina o token seguro JWT
   async login(dto: LoginDto) {
-    // Busca o usuário no banco incluindo as relações com o Tenant
+    // Busca o usuário pelo e-mail. O tenant é carregado explicitamente abaixo
+    // para manter o login robusto mesmo quando a relação TypeORM não é materializada.
     const user = await this.userRepository.findOne({
       where: { email: dto.email },
-      relations: { tenant: true },
     });
 
     if (!user) {
@@ -82,6 +82,13 @@ export class AuthService {
     // Compara a senha enviada com a senha criptografada do banco
     const isPasswordValid = await bcrypt.compare(dto.passwordHash, user.password_hash);
     if (!isPasswordValid) {
+      throw new UnauthorizedException('E-mail ou senha incorretos.');
+    }
+
+    const tenant = await this.tenantRepository.findOne({
+      where: { id: user.tenant_id },
+    });
+    if (!tenant) {
       throw new UnauthorizedException('E-mail ou senha incorretos.');
     }
 
@@ -105,12 +112,12 @@ export class AuthService {
         role: user.role,
       },
       tenant: {
-        id: user.tenant.id,
-        name: user.tenant.name,
-        slug: user.tenant.slug,
-        primary_color: user.tenant.primary_color,
-        secondary_color: user.tenant.secondary_color,
-        logo_url: user.tenant.logo_url,
+        id: tenant.id,
+        name: tenant.name,
+        slug: tenant.slug,
+        primary_color: tenant.primary_color,
+        secondary_color: tenant.secondary_color,
+        logo_url: tenant.logo_url,
       },
     };
   }

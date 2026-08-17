@@ -1,5 +1,6 @@
 // src/app.module.ts
 import { Module } from '@nestjs/common';
+import { AppController } from './app.controller';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ScheduleModule } from '@nestjs/schedule';
 
@@ -21,6 +22,7 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { PushDeviceToken } from './notifications/entities/push-device-token.entity';
 
 @Module({
+  controllers: [AppController],
   imports: [
     ScheduleModule.forRoot(),
     TypeOrmModule.forRoot({

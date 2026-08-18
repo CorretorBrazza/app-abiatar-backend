@@ -7,6 +7,7 @@ import { PushDeviceToken } from './entities/push-device-token.entity';
 import { RegisterPushTokenDto } from './dto/register-push-token.dto';
 import { SendOperationalPushDto } from './dto/send-operational-push.dto';
 import { User } from '../users/user.entity';
+import { Tenant } from '../tenants/tenant.entity';
 import { Presence } from '../presences/entities/presence.entity';
 import { BoothReceptionist } from '../booths/entities/booth-receptionist.entity';
 import { AuditService } from '../audit/audit.service';
@@ -18,6 +19,8 @@ export class NotificationsService implements OnModuleInit {
     private readonly pushTokenRepository: Repository<PushDeviceToken>,
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
+    @InjectRepository(Tenant)
+    private readonly tenantRepository: Repository<Tenant>,
     @InjectRepository(Presence)
     private readonly presenceRepository: Repository<Presence>,
     @InjectRepository(BoothReceptionist)
@@ -238,9 +241,10 @@ export class NotificationsService implements OnModuleInit {
       where: { user_id: userId, tenant_id: tenantId, is_active: true },
     });
 
+    const brandName = await this.getTenantBrandName(tenantId);
     let sentCount = 0;
     for (const device of devices) {
-      if (await this.sendPushNotification(device.token, title, body, data)) {
+      if (await this.sendPushNotification(device.token, title, body, data, brandName)) {
         sentCount += 1;
       }
     }
@@ -258,9 +262,10 @@ export class NotificationsService implements OnModuleInit {
       where: { user_id: In(userIds), tenant_id: tenantId, is_active: true },
     });
 
+    const brandName = await this.getTenantBrandName(tenantId);
     let sentCount = 0;
     for (const device of devices) {
-      if (await this.sendPushNotification(device.token, title, body, data)) {
+      if (await this.sendPushNotification(device.token, title, body, data, brandName)) {
         sentCount += 1;
       }
     }
@@ -272,6 +277,7 @@ export class NotificationsService implements OnModuleInit {
     title: string,
     body: string,
     data?: Record<string, unknown>,
+    brandName = 'ABIATAR',
   ): Promise<boolean> {
     if (getApps().length === 0) {
       console.log(
@@ -288,6 +294,7 @@ export class NotificationsService implements OnModuleInit {
         : 'https://abiatar.bitimob.com.br/#/inbox';
       const stringifiedData = {
         ...(data ? this.stringifyProperties(data) : {}),
+        brandName,
         url: targetUrl,
       };
       await getMessaging().send({
@@ -318,6 +325,11 @@ export class NotificationsService implements OnModuleInit {
       );
       return false;
     }
+  }
+
+  private async getTenantBrandName(tenantId: string): Promise<string> {
+    const tenant = await this.tenantRepository.findOne({ where: { id: tenantId } });
+    return tenant?.name?.trim() || 'ABIATAR';
   }
 
   private stringifyProperties(obj: Record<string, unknown>): Record<string, string> {

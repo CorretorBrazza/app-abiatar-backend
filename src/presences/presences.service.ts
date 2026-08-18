@@ -1,7 +1,7 @@
 // src/presences/presences.service.ts
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, MoreThan } from 'typeorm';
+import { Repository } from 'typeorm';
 import { Cron, CronExpression } from '@nestjs/schedule'; // Importa o decorador de tarefas agendadas
 
 import { Presence } from './entities/presence.entity';
@@ -224,8 +224,9 @@ export class PresencesService {
       ? await this.boothRepository.findOne({ where: { id: activePresence.booth_id, tenant_id: tenantId } })
       : null;
     const activeRuleSet = activeBooth ? await this.getRuleSetForBooth(activeBooth) : undefined;
-    const accumulatedPeriods = await this.getAccumulatedPeriodsForCurrentWeek(brokerId, tenantId);
-    const eligibility = await this.checkWeekendEligibility(brokerId, tenantId, activeRuleSet);
+    const weeklyMetrics = await this.getCurrentWeekPeriodMetrics(brokerId, tenantId);
+    const accumulatedPeriods = weeklyMetrics.weightedPeriods;
+    const eligibility = await this.checkWeekendEligibility(brokerId, tenantId, activeRuleSet, accumulatedPeriods);
     const activeMinutes = activePresence
       ? Math.floor((Date.now() - activePresence.check_in_at.getTime()) / 1000 / 60)
       : 0;
@@ -234,8 +235,13 @@ export class PresencesService {
     return {
       week: 'Segunda a sexta-feira',
       accumulatedPeriods,
+      validPeriods: weeklyMetrics.validPeriods,
+      weightedPeriods: weeklyMetrics.weightedPeriods,
+      invalidatedPeriods: weeklyMetrics.invalidatedPeriods,
       weekendEligibility: eligibility,
       minimumMinutesPerPeriod: minimumMinutes,
+      weekStart: weeklyMetrics.startOfWeek.toISOString(),
+      weekEnd: weeklyMetrics.endOfFriday.toISOString(),
       activeShift: activePresence
         ? {
             presenceId: activePresence.id,
@@ -437,8 +443,8 @@ export class PresencesService {
     };
   }
 
-  // 8. Retorna o total de períodos acumulados (pesos somados) de Segunda a Sexta da semana atual [9]
-  private async getAccumulatedPeriodsForCurrentWeek(brokerId: string, tenantId: string): Promise<number> {
+  // 8. Retorna métricas explícitas de períodos da semana atual.
+  private async getCurrentWeekPeriodMetrics(brokerId: string, tenantId: string) {
     const now = new Date();
     const currentDay = now.getDay(); // 0 = Domingo, 1 = Segunda, ..., 6 = Sábado
     
@@ -457,17 +463,32 @@ export class PresencesService {
     const presences = await this.presenceRepository.createQueryBuilder('presence')
       .where('presence.broker_id = :brokerId', { brokerId })
       .andWhere('presence.tenant_id = :tenantId', { tenantId })
-      .andWhere('presence.status = :status', { status: 'completed' })
+      .andWhere('presence.status IN (:...statuses)', { statuses: ['completed', 'invalidated'] })
       .andWhere('presence.check_in_at BETWEEN :start AND :end', { start: startOfWeek, end: endOfFriday })
       .getMany();
 
     const validPresences = presences.filter(
-      (presence) => presence.accumulated_minutes >= presence.minimum_period_minutes,
+      (presence) => presence.status === 'completed' &&
+        Number(presence.accumulated_minutes || 0) >= Number(presence.minimum_period_minutes || 120),
     );
-    // Soma o peso vigente salvo em cada presença, permitindo regras diferentes por plantão.
-    const totalPeriods = validPresences.reduce((sum, presence) => sum + presence.period_weight, 0);
+    const invalidatedPresences = presences.filter((presence) => presence.status === 'invalidated');
+    const weightedPeriods = validPresences.reduce(
+      (sum, presence) => sum + Number(presence.period_weight || 1),
+      0,
+    );
 
-    return totalPeriods;
+    return {
+      validPeriods: validPresences.length,
+      weightedPeriods,
+      invalidatedPeriods: invalidatedPresences.length,
+      startOfWeek,
+      endOfFriday,
+    };
+  }
+
+  private async getAccumulatedPeriodsForCurrentWeek(brokerId: string, tenantId: string): Promise<number> {
+    const metrics = await this.getCurrentWeekPeriodMetrics(brokerId, tenantId);
+    return metrics.weightedPeriods;
   }
 
   // 9. Valida a elegibilidade do corretor para check-in de fim de semana [9]
@@ -475,10 +496,11 @@ export class PresencesService {
     brokerId: string,
     tenantId: string,
     ruleSet?: BoothRuleSet,
+    accumulatedOverride?: number,
   ): Promise<{ eligible: boolean; accumulated: number; required: number }> {
     const now = new Date();
     const dayOfWeek = now.getDay(); // 0 = Domingo, 6 = Sábado
-    const accumulated = await this.getAccumulatedPeriodsForCurrentWeek(brokerId, tenantId);
+    const accumulated = accumulatedOverride ?? await this.getAccumulatedPeriodsForCurrentWeek(brokerId, tenantId);
     
     // Em dias úteis o check-in é elegível, mas o acumulado real continua sendo devolvido ao dashboard.
     if (dayOfWeek >= 1 && dayOfWeek <= 5) {
@@ -555,17 +577,8 @@ export class PresencesService {
     const startOfMonth = new Date(year, month - 1, 1, 0, 0, 0, 0);
     const endOfMonth = new Date(year, month, 0, 23, 59, 59, 999);
 
-    // Conta quantos períodos o corretor completou com sucesso no mês
-    const completedPeriodsCount = await this.presenceRepository.count({
-      where: {
-        broker_id: brokerId,
-        tenant_id: tenantId,
-        status: 'completed',
-        check_in_at: MoreThan(startOfMonth), // (Tratado simplificadamente no BETWEEN)
-      },
-    });
-
-    // Filtro adicional de intervalo de data nativo via QueryBuilder para garantir precisão
+    // Consulta única do intervalo mensal; a contagem final é feita após validar a duração mínima.
+    // O filtro adicional via QueryBuilder garante precisão no limite de datas.
     const completedPresences = await this.presenceRepository.createQueryBuilder('presence')
       .where('presence.broker_id = :brokerId', { brokerId })
       .andWhere('presence.tenant_id = :tenantId', { tenantId })
@@ -576,7 +589,8 @@ export class PresencesService {
     const validCompletedPresences = completedPresences.filter(
       (presence) => presence.accumulated_minutes >= presence.minimum_period_minutes,
     );
-    const completedPeriodsWeightSum = validCompletedPresences.reduce((sum, presence) => sum + presence.period_weight, 0);
+    const completedPeriodsWeightSum = validCompletedPresences.reduce((sum, presence) => sum + Number(presence.period_weight || 1), 0);
+    const completedPeriodsCount = validCompletedPresences.length;
 
     const availablePeriodsGoal = validCompletedPresences[0]?.minimum_monthly_periods || 20; 
 
@@ -587,7 +601,7 @@ export class PresencesService {
       brokerId,
       month,
       year,
-      completedPeriods: validCompletedPresences.length,
+      completedPeriods: completedPeriodsCount,
       completedPeriodsWeightSum,
       monthlyGoal: availablePeriodsGoal,
       presencePercentage: presencePercentage > 100 ? 100 : presencePercentage, // Limita a 100%

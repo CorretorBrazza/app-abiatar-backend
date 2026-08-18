@@ -22,12 +22,22 @@ export class OnboardingLink {
   @JoinColumn({ name: 'tenant_id' })
   tenant: Tenant;
 
-  @Column()
-  manager_id: string;
+  @Column({ type: 'uuid', nullable: true })
+  manager_id: string | null;
 
-  @ManyToOne(() => User, { onDelete: 'CASCADE' })
+  @ManyToOne(() => User, { onDelete: 'CASCADE', nullable: true })
   @JoinColumn({ name: 'manager_id' })
-  manager: User;
+  manager: User | null;
+
+  @Column({ type: 'uuid', nullable: true })
+  inviter_id: string | null;
+
+  @ManyToOne(() => User, { onDelete: 'SET NULL', nullable: true })
+  @JoinColumn({ name: 'inviter_id' })
+  inviter: User | null;
+
+  @Column({ type: 'varchar', length: 24, default: 'corretor_level_3' })
+  invited_role: 'gerencia_level_2' | 'corretor_level_3';
 
   @Column({ length: 100, unique: true })
   token: string;

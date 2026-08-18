@@ -5,6 +5,8 @@ import { RegisterBrokerDto } from './dto/register-broker.dto';
 import { ApproveBrokerDto } from './dto/approve-broker.dto';
 import { CreateManagerDto } from './dto/create-manager.dto';
 import { CreateReceptionistDto } from './dto/create-receptionist.dto';
+import { CreateOnboardingLinkDto } from './dto/create-onboarding-link.dto';
+import { RegisterManagerDto } from './dto/register-manager.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { TenantId } from '../auth/decorators/tenant-id.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator'; // (Opcional - criaremos na sequência se necessário, ou usamos request.user)
@@ -59,16 +61,29 @@ export class UsersController {
     return this.usersService.registerBroker(registerBrokerDto);
   }
 
-  // 2. Gerente gera o link de convite (ROTA PROTEGIDA) [10]
+  @Get('managers/active')
+  @UseGuards(JwtAuthGuard)
+  async listActiveManagers(@CurrentUser() currentUser: { role: string }, @TenantId() tenantId: string) {
+    if (!['diretoria_level_1', 'platform_admin_level_0'].includes(currentUser.role)) {
+      throw new ForbiddenException('Somente a Diretoria pode consultar a base de gerentes para convites.');
+    }
+    return this.usersService.listActiveManagers(tenantId);
+  }
+
+  // Cria convite de Gerente ou Corretor com vínculo hierárquico obrigatório.
   @Post('onboarding-link')
   @UseGuards(JwtAuthGuard)
   async createOnboardingLink(
-    @CurrentUser('sub') managerId: string,
-    @CurrentUser() currentUser: { sub: string; role: string },
+    @Body() dto: CreateOnboardingLinkDto,
+    @CurrentUser() currentUser: { sub: string; role: string; email?: string },
     @TenantId() tenantId: string,
   ) {
-    this.resolveManagerId(managerId, currentUser);
-    return this.usersService.createOnboardingLink(managerId, tenantId);
+    return this.usersService.createOnboardingLink({ id: currentUser.sub, role: currentUser.role, email: currentUser.email }, tenantId, dto);
+  }
+
+  @Post('register-manager')
+  async registerManager(@Body() dto: RegisterManagerDto) {
+    return this.usersService.registerManager(dto);
   }
 
   // 3. Gerente lista os corretores pendentes do seu time (ROTA PROTEGIDA) [10]

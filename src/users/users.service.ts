@@ -126,27 +126,78 @@ export class UsersService {
     };
   }
 
-  // 1. Gerente gera um novo link de onboarding com validade de 7 dias
-  async createOnboardingLink(managerId: string, tenantId: string) {
-    const token = crypto.randomBytes(16).toString('hex'); // Gera um token aleatório seguro
-    const validUntil = new Date();
-    validUntil.setDate(validUntil.getDate() + 7); // Válido por 7 dias (conforme escopo)
+  async listActiveManagers(tenantId: string) {
+    return this.userRepository.find({
+      where: { tenant_id: tenantId, role: 'gerencia_level_2', status: 'active' },
+      select: { id: true, name: true, nome_guerra: true, email: true, role: true, status: true },
+      order: { nome_guerra: 'ASC' },
+    });
+  }
 
-    const link = this.linkRepository.create({
+  // A Diretoria pode convidar Gerente ou Corretor; a Gerência só pode convidar Corretor para si mesma.
+  async createOnboardingLink(actor: { id: string; role: string; email?: string }, tenantId: string, dto: { invitedRole: 'gerencia_level_2' | 'corretor_level_3'; managerId?: string }) {
+    let managerId: string | null = null;
+    if (actor.role === 'diretoria_level_1' || actor.role === 'platform_admin_level_0') {
+      if (dto.invitedRole === 'corretor_level_3') {
+        if (!dto.managerId) throw new BadRequestException('Para convidar um Corretor, selecione obrigatoriamente um Gerente.');
+        const manager = await this.userRepository.findOne({ where: { id: dto.managerId, tenant_id: tenantId, role: 'gerencia_level_2', status: 'active' } });
+        if (!manager) throw new BadRequestException('O Gerente selecionado não está ativo neste tenant.');
+        managerId = manager.id;
+      } else if (dto.managerId) {
+        throw new BadRequestException('Convite de Gerente não deve possuir gerente responsável.');
+      }
+    } else if (actor.role === 'gerencia_level_2') {
+      if (dto.invitedRole !== 'corretor_level_3') throw new BadRequestException('A Gerência só pode convidar Corretores.');
+      managerId = actor.id;
+    } else {
+      throw new NotFoundException('Operação de convite não disponível para este perfil.');
+    }
+
+    const token = crypto.randomBytes(16).toString('hex');
+    const validUntil = new Date();
+    validUntil.setDate(validUntil.getDate() + 7);
+    const savedLink = await this.linkRepository.save(this.linkRepository.create({
       tenant_id: tenantId,
       manager_id: managerId,
-      token: token,
+      inviter_id: actor.id,
+      invited_role: dto.invitedRole,
+      token,
       valid_until: validUntil,
+      is_used: false,
+    }));
+
+    void this.auditService.record({ tenantId, actorUserId: actor.id, actorRole: actor.role, actorEmail: actor.email }, {
+      action: 'ONBOARDING_LINK_CREATED',
+      entityType: 'ONBOARDING_LINK',
+      entityId: savedLink.id,
+      afterData: { invitedRole: savedLink.invited_role, managerId: savedLink.manager_id, validUntil: savedLink.valid_until },
+      reason: 'Convite hierárquico criado',
     });
+    return { token: savedLink.token, invited_role: savedLink.invited_role, manager_id: savedLink.manager_id, valid_until: savedLink.valid_until, onboarding_url: `https://abiatar.bitimob.com.br/cadastro/${savedLink.token}` };
+  }
 
-    const savedLink = await this.linkRepository.save(link);
-
-    // Retorna a URL personalizada do Gerente com o token único
-    return {
-      token: savedLink.token,
-      valid_until: savedLink.valid_until,
-      onboarding_url: `app.abiatar.com.br/cadastro/${savedLink.token}`,
-    };
+  async registerManager(dto: { token: string; name: string; nomeGuerra: string; email: string; passwordHash: string }) {
+    const link = await this.linkRepository.findOne({ where: { token: dto.token, valid_until: MoreThan(new Date()), is_used: false } });
+    if (!link || link.invited_role !== 'gerencia_level_2') throw new BadRequestException('O convite de Gerente é inválido, expirou ou já foi utilizado.');
+    const existingEmail = await this.userRepository.findOne({ where: { email: dto.email } });
+    if (existingEmail) throw new BadRequestException('Este e-mail de usuário já está cadastrado.');
+    const existingNomeGuerra = await this.userRepository.findOne({ where: { nome_guerra: dto.nomeGuerra, tenant_id: link.tenant_id } });
+    if (existingNomeGuerra) throw new BadRequestException(`O nome de guerra '${dto.nomeGuerra}' já está em uso nesta empresa.`);
+    const managerEntity: User = this.userRepository.create({
+      tenant_id: link.tenant_id,
+      manager_id: null,
+      name: dto.name,
+      nome_guerra: dto.nomeGuerra,
+      email: dto.email,
+      password_hash: await bcrypt.hash(dto.passwordHash, await bcrypt.genSalt(10)),
+      role: 'gerencia_level_2',
+      status: 'active',
+    });
+    const manager = await this.userRepository.save(managerEntity);
+    link.is_used = true;
+    await this.linkRepository.save(link);
+    void this.auditService.record({ tenantId: link.tenant_id, actorUserId: manager.id, actorRole: manager.role, actorEmail: manager.email }, { action: 'INVITATION_ACCEPTED', entityType: 'USER', entityId: manager.id, afterData: { role: manager.role, invitedBy: link.inviter_id }, reason: 'Convite de Gerente aceito' });
+    return { message: 'Cadastro de Gerente concluído com sucesso.', user: { id: manager.id, name: manager.name, nome_guerra: manager.nome_guerra, email: manager.email, role: manager.role } };
   }
 
   // 2. Corretor se cadastra sozinho através do link (Rota Pública - Sem Token JWT)
@@ -162,6 +213,9 @@ export class UsersService {
 
     if (!link) {
       throw new BadRequestException('O link de cadastro é inválido, expirou ou já foi utilizado.');
+    }
+    if (link.invited_role !== 'corretor_level_3' || !link.manager_id) {
+      throw new BadRequestException('Este convite não é destinado ao cadastro de Corretor.');
     }
 
 // Validação de unicidade do Nome de Guerra RESTRITA a esta construtora
@@ -188,7 +242,7 @@ export class UsersService {
     // Cria o registro do Corretor (Status: Inativo, aguardando aprovação do Gerente)
     const broker = this.userRepository.create({
       tenant_id: link.tenant_id,
-      manager_id: link.manager_id,
+        manager_id: link.manager_id,
       name: dto.name,
       nome_guerra: dto.nomeGuerra,
       email: dto.email,
@@ -199,6 +253,8 @@ export class UsersService {
     });
 
     await this.userRepository.save(broker);
+    link.is_used = true;
+    await this.linkRepository.save(link);
 
     return {
       message: 'Seu cadastro foi enviado! Aguarde a aprovação do seu gerente para acessar o sistema.',

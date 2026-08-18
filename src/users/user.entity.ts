@@ -25,7 +25,7 @@ export class User {
   tenant: Tenant;
 
   @Column({ type: 'uuid', nullable: true })
-  manager_id: string;
+  manager_id: string | null;
 
   @Column({ length: 150 })
   name: string;

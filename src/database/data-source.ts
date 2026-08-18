@@ -18,6 +18,7 @@ import { CreateAuditLogs1787000000000 } from './migrations/1787000000000-CreateA
 import { AddReceptionAssignments1787000001000 } from './migrations/1787000001000-AddReceptionAssignments';
 import { AddBoothRuleSets1787000002000 } from './migrations/1787000002000-AddBoothRuleSets';
 import { AddBoothLifecycle1787000003000 } from './migrations/1787000003000-AddBoothLifecycle';
+import { GeneralizeOnboardingLinks1787000004000 } from './migrations/1787000004000-GeneralizeOnboardingLinks';
 
 export const AppDataSource = new DataSource({
   type: 'postgres',
@@ -37,7 +38,7 @@ export const AppDataSource = new DataSource({
     PushDeviceToken,
     AuditLog,
   ],
-  migrations: [CreateAuditLogs1787000000000, AddReceptionAssignments1787000001000, AddBoothRuleSets1787000002000, AddBoothLifecycle1787000003000],
+  migrations: [CreateAuditLogs1787000000000, AddReceptionAssignments1787000001000, AddBoothRuleSets1787000002000, AddBoothLifecycle1787000003000, GeneralizeOnboardingLinks1787000004000],
   migrationsRun: false,
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
 });

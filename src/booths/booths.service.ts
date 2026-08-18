@@ -100,24 +100,50 @@ export class BoothsService {
   }
 
   async getActiveRuleSet(boothId: string, tenantId: string): Promise<BoothRuleSet> {
-    const ruleSet = await this.ruleSetRepository.findOne({
-      where: { booth_id: boothId, tenant_id: tenantId, is_active: true },
-      order: { version: 'DESC' },
-    });
-    if (ruleSet) return ruleSet;
-
     const booth = await this.boothRepository.findOne({ where: { id: boothId, tenant_id: tenantId } });
     if (!booth) {
       throw new NotFoundException('Plantão de vendas não encontrado ou sem autorização de acesso.');
     }
 
-    return this.ruleSetRepository.save(this.ruleSetRepository.create({
-      tenant_id: tenantId,
-      booth_id: booth.id,
-      version: 1,
-      minimum_brokers_required: booth.min_brokers_required,
-      gps_radius_meters: booth.gps_radius,
-    }));
+    try {
+      const ruleSet = await this.ruleSetRepository.findOne({
+        where: { booth_id: boothId, tenant_id: tenantId, is_active: true },
+        order: { version: 'DESC' },
+      });
+      if (ruleSet) return ruleSet;
+
+      return this.ruleSetRepository.save(this.ruleSetRepository.create({
+        tenant_id: tenantId,
+        booth_id: booth.id,
+        version: 1,
+        minimum_brokers_required: booth.min_brokers_required,
+        gps_radius_meters: booth.gps_radius,
+      }));
+    } catch (error) {
+      console.error('[BOOTH_RULES] Tabela de regras indisponível; retornando fallback não persistido:', error instanceof Error ? error.message : String(error));
+      return this.ruleSetRepository.create({
+        id: '',
+        tenant_id: tenantId,
+        booth_id: booth.id,
+        version: 0,
+        is_active: true,
+        minimum_brokers_required: booth.min_brokers_required,
+        gps_radius_meters: booth.gps_radius,
+        minimum_period_minutes: 120,
+        period_weight: 1,
+        saturday_required_periods: 5,
+        sunday_required_periods: 6,
+        opening_time: null,
+        closing_time: null,
+        checkin_tolerance_minutes: 0,
+        checkout_tolerance_minutes: 0,
+        ping_interval_minutes: 30,
+        ping_response_deadline_minutes: 5,
+        weekend_enabled: true,
+        minimum_monthly_periods: 20,
+        created_by: null,
+      });
+    }
   }
 
   async updateRuleSet(

@@ -46,6 +46,10 @@ lerna-debug.log*
 .temp
 .tmp
 
+# Development security runtime data
+/var/dev-backups/
+/var/dev-security/
+
 # Runtime data
 pids
 *.pid

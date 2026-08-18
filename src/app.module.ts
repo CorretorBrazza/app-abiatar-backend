@@ -1,5 +1,5 @@
 // src/app.module.ts
-import { Module } from '@nestjs/common';
+import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { TypeOrmModule } from '@nestjs/typeorm';
@@ -25,10 +25,12 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { PushDeviceToken } from './notifications/entities/push-device-token.entity';
 import { AuditLog } from './audit/entities/audit-log.entity';
 import { AuditModule } from './audit/audit.module';
+import { DevSecurityLogger } from './security/dev-security.logger';
+import { DevRequestLoggingMiddleware } from './security/dev-request-logging.middleware';
 
 @Module({
   controllers: [AppController],
-  providers: [AppService],
+  providers: [AppService, DevSecurityLogger],
   imports: [
     ScheduleModule.forRoot(),
     TypeOrmModule.forRoot({
@@ -61,4 +63,8 @@ import { AuditModule } from './audit/audit.module';
     AuditModule,
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer): void {
+    consumer.apply(DevRequestLoggingMiddleware).forRoutes('*');
+  }
+}

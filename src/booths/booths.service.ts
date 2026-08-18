@@ -121,7 +121,7 @@ export class BoothsService {
       }));
     } catch (error) {
       console.error('[BOOTH_RULES] Tabela de regras indisponível; retornando fallback não persistido:', error instanceof Error ? error.message : String(error));
-      return this.ruleSetRepository.create({
+      return {
         id: '',
         tenant_id: tenantId,
         booth_id: booth.id,
@@ -142,7 +142,7 @@ export class BoothsService {
         weekend_enabled: true,
         minimum_monthly_periods: 20,
         created_by: null,
-      });
+      } as BoothRuleSet;
     }
   }
 

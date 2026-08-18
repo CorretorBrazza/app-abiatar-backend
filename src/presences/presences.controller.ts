@@ -30,6 +30,15 @@ export class PresencesController {
     return this.presencesService.checkOut(brokerId, tenantId);
   }
 
+  @Get('dashboard-summary')
+  @UseGuards(JwtAuthGuard)
+  async getBrokerDashboardSummary(
+    @CurrentUser('sub') brokerId: string,
+    @TenantId() tenantId: string,
+  ) {
+    return this.presencesService.getBrokerDashboardSummary(brokerId, tenantId);
+  }
+
   @Get('current')
   @UseGuards(JwtAuthGuard)
   async getCurrentPresence(

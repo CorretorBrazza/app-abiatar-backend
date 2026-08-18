@@ -172,7 +172,33 @@ export class PresencesService {
     };
   }
 
-  // 4. Busca se o corretor logado já possui uma sessão de check-in ativa (PWA Session Recovery) [8]
+  async getBrokerDashboardSummary(brokerId: string, tenantId: string) {
+    const accumulatedPeriods = await this.getAccumulatedPeriodsForCurrentWeek(brokerId, tenantId);
+    const eligibility = await this.checkWeekendEligibility(brokerId, tenantId);
+    const activePresence = await this.presenceRepository.findOne({
+      where: { broker_id: brokerId, tenant_id: tenantId, status: 'online' },
+    });
+    const activeMinutes = activePresence
+      ? Math.floor((Date.now() - activePresence.check_in_at.getTime()) / 1000 / 60)
+      : 0;
+
+    return {
+      week: 'Segunda a sexta-feira',
+      accumulatedPeriods,
+      weekendEligibility: eligibility,
+      minimumMinutesPerPeriod: 120,
+      activeShift: activePresence
+        ? {
+            presenceId: activePresence.id,
+            activeMinutes,
+            minimumMinutes: 120,
+            minimumReached: activeMinutes >= 120,
+          }
+        : null,
+    };
+  }
+
+  // Busca se o corretor logado já possui uma sessão de check-in ativa (PWA Session Recovery)
   async getCurrentPresence(brokerId: string, tenantId: string) {
     const activePresence = await this.presenceRepository.findOne({
       where: { broker_id: brokerId, tenant_id: tenantId, status: 'online' },

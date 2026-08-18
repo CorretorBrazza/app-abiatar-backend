@@ -1,7 +1,8 @@
 // src/booths/booths.controller.ts
-import { Controller, Post, Get, Delete, Param, Body, UseGuards, ForbiddenException } from '@nestjs/common';
+import { Controller, Post, Get, Patch, Delete, Param, Body, UseGuards, ForbiddenException } from '@nestjs/common';
 import { BoothsService } from './booths.service';
 import { CreateBoothDto } from './dto/create-booth.dto';
+import { UpdateBoothRulesDto } from './dto/update-booth-rules.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { TenantId } from '../auth/decorators/tenant-id.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -64,6 +65,28 @@ export class BoothsController {
       throw new ForbiddenException('Somente a Diretoria pode remover recepcionistas de plantões.');
     }
     return this.boothsService.removeReceptionist(boothId, receptionistId, tenantId);
+  }
+
+  @Get(':boothId/rules')
+  async getRules(
+    @Param('boothId') boothId: string,
+    @TenantId() tenantId: string,
+  ) {
+    return this.boothsService.getActiveRuleSet(boothId, tenantId);
+  }
+
+  @Patch(':boothId/rules')
+  async updateRules(
+    @Param('boothId') boothId: string,
+    @Body() dto: UpdateBoothRulesDto,
+    @CurrentUser() currentUser: { sub: string; role: string; email?: string },
+    @TenantId() tenantId: string,
+  ) {
+    return this.boothsService.updateRuleSet(boothId, tenantId, {
+      id: currentUser.sub,
+      role: currentUser.role,
+      email: currentUser.email,
+    }, dto);
   }
 
   @Get(':id')

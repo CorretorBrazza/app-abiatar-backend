@@ -7,6 +7,9 @@ import { BoothWifi } from './entities/booth-wifi.entity';
 import { BoothReceptionist } from './entities/booth-receptionist.entity';
 import { User } from '../users/user.entity';
 import { CreateBoothDto } from './dto/create-booth.dto';
+import { BoothRuleSet } from './entities/booth-rule-set.entity';
+import { UpdateBoothRulesDto } from './dto/update-booth-rules.dto';
+import { AuditService } from '../audit/audit.service';
 
 @Injectable()
 export class BoothsService {
@@ -22,6 +25,11 @@ export class BoothsService {
 
     @InjectRepository(User)
     private userRepository: Repository<User>,
+
+    @InjectRepository(BoothRuleSet)
+    private ruleSetRepository: Repository<BoothRuleSet>,
+
+    private readonly auditService: AuditService,
   ) {}
 
   // 1. Cadastra um novo plantão de vendas com seus respectivos Wi-Fis [7]
@@ -77,6 +85,71 @@ export class BoothsService {
     }
 
     return booth;
+  }
+
+  async getActiveRuleSet(boothId: string, tenantId: string): Promise<BoothRuleSet> {
+    const ruleSet = await this.ruleSetRepository.findOne({
+      where: { booth_id: boothId, tenant_id: tenantId, is_active: true },
+      order: { version: 'DESC' },
+    });
+    if (ruleSet) return ruleSet;
+
+    const booth = await this.findOne(boothId, tenantId);
+    return this.ruleSetRepository.save(this.ruleSetRepository.create({
+      tenant_id: tenantId,
+      booth_id: booth.id,
+      version: 1,
+      minimum_brokers_required: booth.min_brokers_required,
+      gps_radius_meters: booth.gps_radius,
+    }));
+  }
+
+  async updateRuleSet(
+    boothId: string,
+    tenantId: string,
+    actor: { id: string; role: string; email?: string },
+    dto: UpdateBoothRulesDto,
+  ): Promise<BoothRuleSet> {
+    if (actor.role !== 'diretoria_level_1') {
+      throw new NotFoundException('Configuração de plantão não encontrada.');
+    }
+    await this.findOne(boothId, tenantId);
+    const current = await this.getActiveRuleSet(boothId, tenantId);
+    const nextVersion = this.ruleSetRepository.create({
+      ...current,
+      id: undefined,
+      version: current.version + 1,
+      is_active: true,
+      created_by: actor.id,
+      minimum_period_minutes: dto.minimumPeriodMinutes ?? current.minimum_period_minutes,
+      period_weight: dto.periodWeight ?? current.period_weight,
+      saturday_required_periods: dto.saturdayRequiredPeriods ?? current.saturday_required_periods,
+      sunday_required_periods: dto.sundayRequiredPeriods ?? current.sunday_required_periods,
+      opening_time: dto.openingTime === undefined ? current.opening_time : dto.openingTime,
+      closing_time: dto.closingTime === undefined ? current.closing_time : dto.closingTime,
+      checkin_tolerance_minutes: dto.checkinToleranceMinutes ?? current.checkin_tolerance_minutes,
+      checkout_tolerance_minutes: dto.checkoutToleranceMinutes ?? current.checkout_tolerance_minutes,
+      ping_interval_minutes: dto.pingIntervalMinutes ?? current.ping_interval_minutes,
+      ping_response_deadline_minutes: dto.pingResponseDeadlineMinutes ?? current.ping_response_deadline_minutes,
+      minimum_brokers_required: dto.minimumBrokersRequired ?? current.minimum_brokers_required,
+      gps_radius_meters: dto.gpsRadiusMeters ?? current.gps_radius_meters,
+      weekend_enabled: dto.weekendEnabled ?? current.weekend_enabled,
+      minimum_monthly_periods: dto.minimumMonthlyPeriods ?? current.minimum_monthly_periods,
+    });
+    await this.ruleSetRepository.update({ booth_id: boothId, tenant_id: tenantId, is_active: true }, { is_active: false });
+    const saved = await this.ruleSetRepository.save(nextVersion);
+    await this.auditService.record(
+      { tenantId, boothId, actorUserId: actor.id, actorRole: actor.role, actorEmail: actor.email },
+      {
+        action: 'BOOTH_RULES_UPDATED',
+        entityType: 'booth_rule_set',
+        entityId: saved.id,
+        beforeData: current as unknown as Record<string, unknown>,
+        afterData: saved as unknown as Record<string, unknown>,
+        reason: dto.reason || 'Atualização das regras do plantão pela Diretoria',
+      },
+    );
+    return saved;
   }
 
   async assignReceptionist(

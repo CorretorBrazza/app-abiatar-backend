@@ -106,7 +106,11 @@ export class BoothsService {
     });
     if (ruleSet) return ruleSet;
 
-    const booth = await this.findOne(boothId, tenantId);
+    const booth = await this.boothRepository.findOne({ where: { id: boothId, tenant_id: tenantId } });
+    if (!booth) {
+      throw new NotFoundException('Plantão de vendas não encontrado ou sem autorização de acesso.');
+    }
+
     return this.ruleSetRepository.save(this.ruleSetRepository.create({
       tenant_id: tenantId,
       booth_id: booth.id,

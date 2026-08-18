@@ -11,6 +11,7 @@ import { AuthModule } from './auth/auth.module';
 import { Booth } from './booths/entities/booth.entity';
 import { BoothWifi } from './booths/entities/booth-wifi.entity';
 import { BoothReceptionist } from './booths/entities/booth-receptionist.entity';
+import { BoothRuleSet } from './booths/entities/booth-rule-set.entity';
 import { BoothsModule } from './booths/booths.module';
 import { OnboardingLink } from './users/entities/onboarding-link.entity';
 import { UsersModule } from './users/users.module';
@@ -39,6 +40,7 @@ import { AuditModule } from './audit/audit.module';
         Booth, 
         BoothWifi,
         BoothReceptionist,
+        BoothRuleSet,
         OnboardingLink, 
         Presence, 
         DeadManLog, 

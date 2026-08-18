@@ -63,7 +63,7 @@ export class BoothRuleSet {
   @Column({ type: 'int', default: 30 })
   ping_interval_minutes: number;
 
-  @Column({ type: 'int', default: 5 })
+  @Column({ type: 'int', default: 30 })
   ping_response_deadline_minutes: number;
 
   @Column({ type: 'int', default: 2 })

@@ -372,8 +372,8 @@ export class PresencesService {
     }
   }
 
-  // 6. Motor Agendador Cron: Roda a cada 30 minutos em segundo plano [8, 18]
-  @Cron(CronExpression.EVERY_30_MINUTES)
+  // 6. Motor interno de verificação: executa a cada 5 minutos, sem suspender antes da janela configurada.
+  @Cron(CronExpression.EVERY_5_MINUTES)
   async handleDeadMansSwitchCron() {
     console.log('[CRON] Iniciando verificação de permanência (Dead Man\'s Switch)...');
     await this.processPresencesAndPings();
@@ -391,6 +391,14 @@ export class PresencesService {
     let brokersSuspended = 0;
 
     for (const presence of activePresences) {
+      const booth = await this.boothRepository.findOne({
+        where: { id: presence.booth_id, tenant_id: presence.tenant_id },
+      });
+      if (!booth) continue;
+      const ruleSet = await this.getRuleSetForBooth(booth);
+      const pingIntervalMinutes = Math.max(1, Number(ruleSet.ping_interval_minutes || 30));
+      const responseDeadlineMinutes = Math.max(1, Number(ruleSet.ping_response_deadline_minutes || 30));
+
       // Busca se já existe um ping "pendente" lançado anteriormente para essa presença
       const pendingPing = await this.logRepository.findOne({
         where: { presence_id: presence.id, response_status: 'pending' },
@@ -398,12 +406,11 @@ export class PresencesService {
       });
 
       if (pendingPing) {
-        // Se existe um ping pendente enviado há mais de 5 minutos e não respondido:
-        // O corretor é suspenso por falta de resposta! [8]
+        // O prazo é configurável por plantão; o padrão é 30 minutos.
         const diffInMs = now.getTime() - pendingPing.sent_at.getTime();
         const minutesElapsed = Math.floor(diffInMs / 1000 / 60);
 
-        if (minutesElapsed >= 5) {
+        if (minutesElapsed >= responseDeadlineMinutes) {
           pendingPing.response_status = 'no_response';
           await this.logRepository.save(pendingPing);
 
@@ -420,7 +427,16 @@ export class PresencesService {
           );
         }
       } else {
-        // Se não há pings pendentes ou o anterior foi respondido, "dispara" um novo ping na nuvem [8]
+        const lastPing = await this.logRepository.findOne({
+          where: { presence_id: presence.id },
+          order: { sent_at: 'DESC' },
+        });
+        const minutesSinceLastPing = lastPing
+          ? Math.floor((now.getTime() - lastPing.sent_at.getTime()) / 1000 / 60)
+          : pingIntervalMinutes;
+        if (lastPing && minutesSinceLastPing < pingIntervalMinutes) continue;
+
+        // Sem ping pendente e após o intervalo configurado, dispara nova confirmação.
         const newPing = this.logRepository.create({
           tenant_id: presence.tenant_id,
           presence_id: presence.id,

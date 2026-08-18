@@ -28,7 +28,7 @@ export class UpdateBoothRulesDto {
   @IsInt() @Min(1) @Max(240) @IsOptional()
   pingIntervalMinutes?: number;
 
-  @IsInt() @Min(1) @Max(60) @IsOptional()
+  @IsInt() @Min(1) @Max(240) @IsOptional()
   pingResponseDeadlineMinutes?: number;
 
   @IsInt() @Min(0) @Max(1000) @IsOptional()

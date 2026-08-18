@@ -76,6 +76,9 @@ export class PresencesService {
     if (!booth) {
       throw new NotFoundException('Plantão de vendas não encontrado ou sem autorização.');
     }
+    if (booth.lifecycle_status !== 'published') {
+      throw new BadRequestException('Este plantão não está publicado para novos Check-ins.');
+    }
 
     const ruleSet = await this.getRuleSetForBooth(booth);
     const eligibility = await this.checkWeekendEligibility(brokerId, tenantId, ruleSet);

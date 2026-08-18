@@ -71,4 +71,10 @@ export class Booth {
 
   @OneToMany(() => BoothWifi, (wifi) => wifi.booth, { cascade: true })
   wifis: BoothWifi[];
+
+  // Campos virtuais para diferenciar cadastro-base e regra efetiva na resposta da API.
+  base_gps_radius?: number;
+  effective_gps_radius?: number;
+  base_min_brokers_required?: number;
+  effective_min_brokers_required?: number;
 }

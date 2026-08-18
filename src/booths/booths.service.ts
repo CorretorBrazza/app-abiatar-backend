@@ -150,7 +150,13 @@ export class BoothsService {
 
   private async applyActiveRules(booth: Booth): Promise<Booth> {
     try {
+      const baseGpsRadius = Number(booth.gps_radius);
+      const baseMinimumBrokers = Number(booth.min_brokers_required);
       const rules = await this.getActiveRuleSet(booth.id, booth.tenant_id);
+      booth.base_gps_radius = baseGpsRadius;
+      booth.base_min_brokers_required = baseMinimumBrokers;
+      booth.effective_gps_radius = Number(rules.gps_radius_meters);
+      booth.effective_min_brokers_required = Number(rules.minimum_brokers_required);
       booth.gps_radius = rules.gps_radius_meters;
       booth.min_brokers_required = rules.minimum_brokers_required;
     } catch (error) {

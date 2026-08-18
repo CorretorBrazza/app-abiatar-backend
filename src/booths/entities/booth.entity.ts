@@ -44,11 +44,24 @@ export class Booth {
   min_brokers_required: number; // Cobertura mínima exigida para o plantão [6]
 
   @Column({ type: 'uuid', nullable: true })
-  manager_id: string | null; // <-- AJUSTADO PARA "string | null" para tipagem estrita
+  manager_id: string | null;
+
+  @Column({ type: 'varchar', length: 24, default: 'draft' })
+  lifecycle_status: 'draft' | 'published' | 'paused' | 'archived';
+
+  @Column({ type: 'timestamp', nullable: true })
+  published_at: Date | null;
+
+  @Column({ type: 'uuid', nullable: true })
+  published_by: string | null; // <-- AJUSTADO PARA "string | null" para tipagem estrita
 
   @ManyToOne(() => User, { onDelete: 'SET NULL', nullable: true })
   @JoinColumn({ name: 'manager_id' })
-  manager: User | null; // <-- AJUSTADO PARA "User | null" para tipagem estrita
+  manager: User | null;
+
+  @ManyToOne(() => User, { onDelete: 'SET NULL', nullable: true })
+  @JoinColumn({ name: 'published_by' })
+  publisher: User | null; // <-- AJUSTADO PARA "User | null" para tipagem estrita
 
   @CreateDateColumn()
   created_at: Date;

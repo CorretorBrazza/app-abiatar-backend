@@ -3,6 +3,7 @@ import { Controller, Post, Get, Patch, Delete, Param, Body, UseGuards, Forbidden
 import { BoothsService } from './booths.service';
 import { CreateBoothDto } from './dto/create-booth.dto';
 import { UpdateBoothRulesDto } from './dto/update-booth-rules.dto';
+import { UpdateBoothDto } from './dto/update-booth.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { TenantId } from '../auth/decorators/tenant-id.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -13,13 +14,16 @@ export class BoothsController {
   constructor(private readonly boothsService: BoothsService) {}
 
   @Post()
-  async create(@Body() createBoothDto: CreateBoothDto, @TenantId() tenantId: string) {
+  async create(@Body() createBoothDto: CreateBoothDto, @CurrentUser() currentUser: { role: string }, @TenantId() tenantId: string) {
+    if (currentUser.role !== 'diretoria_level_1' && currentUser.role !== 'platform_admin_level_0') {
+      throw new ForbiddenException('Somente a Diretoria pode cadastrar plantões.');
+    }
     return this.boothsService.create(createBoothDto, tenantId);
   }
 
   @Get()
-  async findAll(@TenantId() tenantId: string) {
-    return this.boothsService.findAll(tenantId);
+  async findAll(@TenantId() tenantId: string, @CurrentUser() currentUser: { role: string }) {
+    return this.boothsService.findAll(tenantId, currentUser.role);
   }
 
   @Get('assigned')
@@ -67,6 +71,43 @@ export class BoothsController {
     return this.boothsService.removeReceptionist(boothId, receptionistId, tenantId);
   }
 
+  @Patch(':boothId')
+  async updateBooth(
+    @Param('boothId') boothId: string,
+    @Body() dto: UpdateBoothDto,
+    @CurrentUser() currentUser: { sub: string; role: string; email?: string },
+    @TenantId() tenantId: string,
+  ) {
+    return this.boothsService.updateBooth(boothId, tenantId, { id: currentUser.sub, role: currentUser.role, email: currentUser.email }, dto);
+  }
+
+  @Post(':boothId/publish')
+  async publishBooth(
+    @Param('boothId') boothId: string,
+    @CurrentUser() currentUser: { sub: string; role: string; email?: string },
+    @TenantId() tenantId: string,
+  ) {
+    return this.boothsService.changeLifecycle(boothId, tenantId, { id: currentUser.sub, role: currentUser.role, email: currentUser.email }, 'publish');
+  }
+
+  @Post(':boothId/pause')
+  async pauseBooth(
+    @Param('boothId') boothId: string,
+    @CurrentUser() currentUser: { sub: string; role: string; email?: string },
+    @TenantId() tenantId: string,
+  ) {
+    return this.boothsService.changeLifecycle(boothId, tenantId, { id: currentUser.sub, role: currentUser.role, email: currentUser.email }, 'pause');
+  }
+
+  @Post(':boothId/archive')
+  async archiveBooth(
+    @Param('boothId') boothId: string,
+    @CurrentUser() currentUser: { sub: string; role: string; email?: string },
+    @TenantId() tenantId: string,
+  ) {
+    return this.boothsService.changeLifecycle(boothId, tenantId, { id: currentUser.sub, role: currentUser.role, email: currentUser.email }, 'archive');
+  }
+
   @Get(':boothId/rules')
   async getRules(
     @Param('boothId') boothId: string,
@@ -95,7 +136,10 @@ export class BoothsController {
   }
 
   @Delete(':id')
-  async remove(@Param('id') id: string, @TenantId() tenantId: string) {
+  async remove(@Param('id') id: string, @CurrentUser() currentUser: { role: string }, @TenantId() tenantId: string) {
+    if (currentUser.role !== 'diretoria_level_1' && currentUser.role !== 'platform_admin_level_0') {
+      throw new ForbiddenException('Somente a Diretoria pode excluir plantões.');
+    }
     return this.boothsService.remove(id, tenantId);
   }
 }

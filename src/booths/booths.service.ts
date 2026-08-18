@@ -1,5 +1,5 @@
 // src/booths/booths.service.ts
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Booth } from './entities/booth.entity';
@@ -7,6 +7,7 @@ import { BoothWifi } from './entities/booth-wifi.entity';
 import { BoothReceptionist } from './entities/booth-receptionist.entity';
 import { User } from '../users/user.entity';
 import { CreateBoothDto } from './dto/create-booth.dto';
+import { UpdateBoothDto } from './dto/update-booth.dto';
 import { BoothRuleSet } from './entities/booth-rule-set.entity';
 import { UpdateBoothRulesDto } from './dto/update-booth-rules.dto';
 import { AuditService } from '../audit/audit.service';
@@ -44,6 +45,9 @@ export class BoothsService {
       gps_radius: dto.gps_radius || 100,
       min_brokers_required: dto.min_brokers_required || 2, // [6]
       manager_id: dto.managerId || null, // [7]
+      lifecycle_status: 'draft',
+      published_at: null,
+      published_by: null,
     });
 
     const savedBooth = await this.boothRepository.save(booth);
@@ -65,13 +69,69 @@ export class BoothsService {
   }
 
   // 2. Retorna todos os plantões cadastrados daquela construtora específica [7]
-  async findAll(tenantId: string): Promise<Booth[]> {
+  async findAll(tenantId: string, role?: string): Promise<Booth[]> {
     const booths = await this.boothRepository.find({
       where: { tenant_id: tenantId },
       relations: { wifis: true },
       order: { name: 'ASC' },
     });
-    return Promise.all(booths.map((booth) => this.applyActiveRules(booth)));
+    const visibleBooths = role === 'diretoria_level_1' || role === 'platform_admin_level_0'
+      ? booths
+      : booths.filter((booth) => booth.lifecycle_status === 'published');
+    return Promise.all(visibleBooths.map((booth) => this.applyActiveRules(booth)));
+  }
+
+  async updateBooth(boothId: string, tenantId: string, actor: { id: string; role: string; email?: string }, dto: UpdateBoothDto): Promise<Booth> {
+    if (actor.role !== 'diretoria_level_1' && actor.role !== 'platform_admin_level_0') {
+      throw new NotFoundException('Cadastro de plantão não encontrado.');
+    }
+    const booth = await this.boothRepository.findOne({ where: { id: boothId, tenant_id: tenantId }, relations: { wifis: true } });
+    if (!booth) throw new NotFoundException('Plantão de vendas não encontrado.');
+
+    const before = { ...booth };
+    booth.name = dto.name ?? booth.name;
+    booth.address = dto.address ?? booth.address;
+    booth.latitude = dto.latitude ?? booth.latitude;
+    booth.longitude = dto.longitude ?? booth.longitude;
+    booth.gps_radius = dto.gpsRadius ?? booth.gps_radius;
+    booth.min_brokers_required = dto.minimumBrokersRequired ?? booth.min_brokers_required;
+    if (dto.managerId !== undefined) booth.manager_id = dto.managerId;
+    const saved = await this.boothRepository.save(booth);
+
+    if (dto.wifis !== undefined) {
+      await this.wifiRepository.delete({ booth_id: boothId, tenant_id: tenantId });
+      if (dto.wifis.length) {
+        await this.wifiRepository.save(dto.wifis.map((ssid) => this.wifiRepository.create({ tenant_id: tenantId, booth_id: boothId, ssid: ssid.trim() })));
+      }
+    }
+    await this.auditService.record(
+      { tenantId, boothId, actorUserId: actor.id, actorRole: actor.role, actorEmail: actor.email },
+      { action: 'BOOTH_UPDATED', entityType: 'booth', entityId: boothId, beforeData: before as unknown as Record<string, unknown>, afterData: saved as unknown as Record<string, unknown>, reason: dto.reason || 'Atualização do cadastro do plantão' },
+    );
+    return this.findOne(boothId, tenantId);
+  }
+
+  async changeLifecycle(boothId: string, tenantId: string, actor: { id: string; role: string; email?: string }, action: 'publish' | 'pause' | 'archive'): Promise<Booth> {
+    if (actor.role !== 'diretoria_level_1' && actor.role !== 'platform_admin_level_0') throw new NotFoundException('Plantão não encontrado.');
+    const booth = await this.boothRepository.findOne({ where: { id: boothId, tenant_id: tenantId } });
+    if (!booth) throw new NotFoundException('Plantão de vendas não encontrado.');
+    if (action === 'publish') {
+      const rule = await this.ruleSetRepository.findOne({ where: { booth_id: boothId, tenant_id: tenantId, is_active: true }, order: { version: 'DESC' } });
+      if (!rule || !rule.created_by) throw new BadRequestException('Configure e salve as regras operacionais antes de publicar este plantão.');
+      booth.lifecycle_status = 'published';
+      booth.published_at = new Date();
+      booth.published_by = actor.id;
+    } else if (action === 'pause') {
+      booth.lifecycle_status = 'paused';
+    } else {
+      booth.lifecycle_status = 'archived';
+    }
+    const saved = await this.boothRepository.save(booth);
+    await this.auditService.record(
+      { tenantId, boothId, actorUserId: actor.id, actorRole: actor.role, actorEmail: actor.email },
+      { action: `BOOTH_${action.toUpperCase()}`, entityType: 'booth', entityId: boothId, afterData: saved as unknown as Record<string, unknown>, reason: `Transição de ciclo de vida: ${action}` },
+    );
+    return this.findOne(boothId, tenantId);
   }
 
   // 3. Busca um único plantão por ID, validando se pertence ao tenant solicitante [7]
@@ -237,10 +297,12 @@ export class BoothsService {
       relations: { wifis: true },
       order: { name: 'ASC' },
     });
-    return booths.map((booth) => ({
-      ...booth,
-      reception_assignment_id: assignments.find((assignment) => assignment.booth_id === booth.id)?.id,
-    }));
+    return booths
+      .filter((booth) => booth.lifecycle_status === 'published')
+      .map((booth) => ({
+        ...booth,
+        reception_assignment_id: assignments.find((assignment) => assignment.booth_id === booth.id)?.id,
+      }));
   }
 
   async listReceptionists(boothId: string, tenantId: string) {

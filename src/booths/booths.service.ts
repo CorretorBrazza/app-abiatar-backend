@@ -89,9 +89,13 @@ export class BoothsService {
   }
 
   private async applyActiveRules(booth: Booth): Promise<Booth> {
-    const rules = await this.getActiveRuleSet(booth.id, booth.tenant_id);
-    booth.gps_radius = rules.gps_radius_meters;
-    booth.min_brokers_required = rules.minimum_brokers_required;
+    try {
+      const rules = await this.getActiveRuleSet(booth.id, booth.tenant_id);
+      booth.gps_radius = rules.gps_radius_meters;
+      booth.min_brokers_required = rules.minimum_brokers_required;
+    } catch (error) {
+      console.error('[BOOTH_RULES] Falha ao carregar regras; usando valores legados do plantão:', error instanceof Error ? error.message : String(error));
+    }
     return booth;
   }
 

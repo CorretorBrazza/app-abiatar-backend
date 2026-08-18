@@ -148,11 +148,15 @@ export class PresencesService {
   }
 
   private async getRuleSetForBooth(booth: Booth): Promise<BoothRuleSet> {
-    const ruleSet = await this.ruleSetRepository.findOne({
-      where: { booth_id: booth.id, tenant_id: booth.tenant_id, is_active: true },
-      order: { version: 'DESC' },
-    });
-    if (ruleSet) return ruleSet;
+    try {
+      const ruleSet = await this.ruleSetRepository.findOne({
+        where: { booth_id: booth.id, tenant_id: booth.tenant_id, is_active: true },
+        order: { version: 'DESC' },
+      });
+      if (ruleSet) return ruleSet;
+    } catch (error) {
+      console.error('[PRESENCE_RULES] Falha ao carregar regras; usando fallback do plantão:', error instanceof Error ? error.message : String(error));
+    }
 
     return this.ruleSetRepository.create({
       id: '',

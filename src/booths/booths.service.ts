@@ -66,11 +66,12 @@ export class BoothsService {
 
   // 2. Retorna todos os plantões cadastrados daquela construtora específica [7]
   async findAll(tenantId: string): Promise<Booth[]> {
-    return this.boothRepository.find({
+    const booths = await this.boothRepository.find({
       where: { tenant_id: tenantId },
       relations: { wifis: true },
       order: { name: 'ASC' },
     });
+    return Promise.all(booths.map((booth) => this.applyActiveRules(booth)));
   }
 
   // 3. Busca um único plantão por ID, validando se pertence ao tenant solicitante [7]
@@ -84,6 +85,13 @@ export class BoothsService {
       throw new NotFoundException('Plantão de vendas não encontrado ou sem autorização de acesso.');
     }
 
+    return this.applyActiveRules(booth);
+  }
+
+  private async applyActiveRules(booth: Booth): Promise<Booth> {
+    const rules = await this.getActiveRuleSet(booth.id, booth.tenant_id);
+    booth.gps_radius = rules.gps_radius_meters;
+    booth.min_brokers_required = rules.minimum_brokers_required;
     return booth;
   }
 

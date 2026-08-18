@@ -34,6 +34,18 @@ export class Presence {
   @Column()
   booth_id: string;
 
+  @Column({ type: 'uuid', nullable: true })
+  rule_set_id: string | null;
+
+  @Column({ type: 'int', default: 120 })
+  minimum_period_minutes: number;
+
+  @Column({ type: 'int', default: 1 })
+  period_weight: number;
+
+  @Column({ type: 'int', default: 20 })
+  minimum_monthly_periods: number;
+
   @ManyToOne(() => Booth, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'booth_id' })
   booth: Booth;
@@ -54,8 +66,6 @@ export class Presence {
   })
   status: string;
 
-  @Column({ default: 1 })
-  period_weight: number; // Peso do período (ex: 1 para turnos normais, 2 para feriados) [9]
 
   @CreateDateColumn()
   created_at: Date;

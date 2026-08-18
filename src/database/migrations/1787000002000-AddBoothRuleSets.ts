@@ -5,6 +5,12 @@ export class AddBoothRuleSets1787000002000 implements MigrationInterface {
 
   async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`
+      ALTER TABLE "presences" ADD COLUMN IF NOT EXISTS "rule_set_id" uuid
+    `);
+    await queryRunner.query(`ALTER TABLE "presences" ADD COLUMN IF NOT EXISTS "minimum_period_minutes" integer NOT NULL DEFAULT 120`);
+    await queryRunner.query(`ALTER TABLE "presences" ADD COLUMN IF NOT EXISTS "period_weight" integer NOT NULL DEFAULT 1`);
+    await queryRunner.query(`ALTER TABLE "presences" ADD COLUMN IF NOT EXISTS "minimum_monthly_periods" integer NOT NULL DEFAULT 20`);
+    await queryRunner.query(`
       CREATE TABLE IF NOT EXISTS "booth_rule_sets" (
         "id" uuid NOT NULL DEFAULT gen_random_uuid(),
         "tenant_id" uuid NOT NULL,
@@ -47,6 +53,10 @@ export class AddBoothRuleSets1787000002000 implements MigrationInterface {
   }
 
   async down(queryRunner: QueryRunner): Promise<void> {
+    await queryRunner.query(`ALTER TABLE "presences" DROP COLUMN IF EXISTS "rule_set_id"`);
+    await queryRunner.query(`ALTER TABLE "presences" DROP COLUMN IF EXISTS "minimum_period_minutes"`);
+    await queryRunner.query(`ALTER TABLE "presences" DROP COLUMN IF EXISTS "period_weight"`);
+    await queryRunner.query(`ALTER TABLE "presences" DROP COLUMN IF EXISTS "minimum_monthly_periods"`);
     await queryRunner.query(`DROP INDEX IF EXISTS "IDX_booth_rule_sets_tenant_booth_active"`);
     await queryRunner.query(`DROP TABLE IF EXISTS "booth_rule_sets"`);
   }

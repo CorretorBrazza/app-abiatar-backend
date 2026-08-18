@@ -6,6 +6,7 @@ import { Cron, CronExpression } from '@nestjs/schedule'; // Importa o decorador 
 
 import { Presence } from './entities/presence.entity';
 import { Booth } from '../booths/entities/booth.entity';
+import { BoothRuleSet } from '../booths/entities/booth-rule-set.entity';
 import { DeadManLog } from './entities/dead-man-log.entity';
 import { CheckInDto } from './dto/check-in.dto';
 import { PingResponseDto } from './dto/ping-response.dto';
@@ -21,6 +22,9 @@ export class PresencesService {
 
     @InjectRepository(Booth)
     private boothRepository: Repository<Booth>,
+
+    @InjectRepository(BoothRuleSet)
+    private ruleSetRepository: Repository<BoothRuleSet>,
 
     @InjectRepository(DeadManLog)
     private logRepository: Repository<DeadManLog>,
@@ -55,17 +59,7 @@ export class PresencesService {
 
   
 
-    // A. VALIDAÇÃO DE ELEGIBILIDADE DE FIM DE SEMANA [9]
-    const eligibility = await this.checkWeekendEligibility(brokerId, tenantId);
-    if (!eligibility.eligible) {
-      const dayName = new Date().getDay() === 6 ? 'Sábado' : 'Domingo';
-      throw new BadRequestException(
-        `Check-in bloqueado para este ${dayName}. Para trabalhar no fim de semana, é necessário acumular no mínimo ${eligibility.required} períodos de Segunda a Sexta. Você acumulou apenas ${eligibility.accumulated} períodos nesta semana.`,
-      );
-    }
-    
-
-    // B. Verifica se o corretor já possui um check-in ativo ("online") no momento
+    // A. Verifica se o corretor já possui um check-in ativo ("online") no momento
     const activePresence = await this.presenceRepository.findOne({
       where: { broker_id: brokerId, tenant_id: tenantId, status: 'online' },
     });
@@ -81,6 +75,15 @@ export class PresencesService {
 
     if (!booth) {
       throw new NotFoundException('Plantão de vendas não encontrado ou sem autorização.');
+    }
+
+    const ruleSet = await this.getRuleSetForBooth(booth);
+    const eligibility = await this.checkWeekendEligibility(brokerId, tenantId, ruleSet);
+    if (!eligibility.eligible) {
+      const dayName = new Date().getDay() === 6 ? 'Sábado' : 'Domingo';
+      throw new BadRequestException(
+        `Check-in bloqueado para este ${dayName}. Para trabalhar no fim de semana, é necessário acumular no mínimo ${eligibility.required} períodos de Segunda a Sexta. Você acumulou apenas ${eligibility.accumulated} períodos nesta semana.`,
+      );
     }
 
     let isPresenceValid = false;
@@ -110,7 +113,7 @@ export class PresencesService {
         boothLon,
       );
 
-      if (distanceCalculated <= booth.gps_radius) {
+      if (distanceCalculated <= ruleSet.gps_radius_meters) {
         isPresenceValid = true;
         methodUsed = 'GPS de Alta Precisão';
       }
@@ -118,7 +121,7 @@ export class PresencesService {
 
     if (!isPresenceValid) {
       throw new BadRequestException(
-        `Check-in recusado. Você está fora da área do plantão. Distância calculada: ${Math.round(distanceCalculated)} metros. Limite permitido: ${booth.gps_radius} metros.`,
+        `Check-in recusado. Você está fora da área do plantão. Distância calculada: ${Math.round(distanceCalculated)} metros. Limite permitido: ${ruleSet.gps_radius_meters} metros.`,
       );
     }
 
@@ -126,6 +129,10 @@ export class PresencesService {
       tenant_id: tenantId,
       broker_id: brokerId,
       booth_id: dto.boothId,
+      rule_set_id: ruleSet.id || null,
+      minimum_period_minutes: ruleSet.minimum_period_minutes,
+      period_weight: ruleSet.period_weight,
+      minimum_monthly_periods: ruleSet.minimum_monthly_periods,
       check_in_at: new Date(),
       status: 'online',
     });
@@ -138,6 +145,37 @@ export class PresencesService {
       methodUsed: methodUsed,
       distanceInMeters: Math.round(distanceCalculated),
     };
+  }
+
+  private async getRuleSetForBooth(booth: Booth): Promise<BoothRuleSet> {
+    const ruleSet = await this.ruleSetRepository.findOne({
+      where: { booth_id: booth.id, tenant_id: booth.tenant_id, is_active: true },
+      order: { version: 'DESC' },
+    });
+    if (ruleSet) return ruleSet;
+
+    return this.ruleSetRepository.create({
+      id: '',
+      tenant_id: booth.tenant_id,
+      booth_id: booth.id,
+      version: 1,
+      is_active: true,
+      minimum_period_minutes: 120,
+      period_weight: 1,
+      saturday_required_periods: 5,
+      sunday_required_periods: 6,
+      opening_time: null,
+      closing_time: null,
+      checkin_tolerance_minutes: 0,
+      checkout_tolerance_minutes: 0,
+      ping_interval_minutes: 30,
+      ping_response_deadline_minutes: 5,
+      minimum_brokers_required: booth.min_brokers_required,
+      gps_radius_meters: booth.gps_radius,
+      weekend_enabled: true,
+      minimum_monthly_periods: 20,
+      created_by: null,
+    });
   }
 
   // 3. Realiza o Check-out voluntário e calcula o tempo total acumulado em minutos
@@ -156,7 +194,7 @@ export class PresencesService {
 
     activePresence.check_out_at = now;
     activePresence.accumulated_minutes = elapsedMinutes;
-    activePresence.status = elapsedMinutes >= 120 ? 'completed' : 'invalidated';
+    activePresence.status = elapsedMinutes >= activePresence.minimum_period_minutes ? 'completed' : 'invalidated';
 
     const savedPresence = await this.presenceRepository.save(activePresence);
 
@@ -164,9 +202,9 @@ export class PresencesService {
     await this.checkAndNotifyLowCoverage(activePresence.booth_id, tenantId);
 
     return {
-      message: elapsedMinutes >= 120
+      message: elapsedMinutes >= activePresence.minimum_period_minutes
         ? 'Check-out realizado com sucesso! Período contabilizado.'
-        : 'Check-out realizado. O período foi invalidado por não atingir o mínimo de 120 minutos.',
+        : `Check-out realizado. O período foi invalidado por não atingir o mínimo de ${activePresence.minimum_period_minutes} minutos.`,
       presenceId: savedPresence.id,
       checkInAt: savedPresence.check_in_at,
       checkOutAt: savedPresence.check_out_at,
@@ -175,26 +213,31 @@ export class PresencesService {
   }
 
   async getBrokerDashboardSummary(brokerId: string, tenantId: string) {
-    const accumulatedPeriods = await this.getAccumulatedPeriodsForCurrentWeek(brokerId, tenantId);
-    const eligibility = await this.checkWeekendEligibility(brokerId, tenantId);
     const activePresence = await this.presenceRepository.findOne({
       where: { broker_id: brokerId, tenant_id: tenantId, status: 'online' },
     });
+    const activeBooth = activePresence
+      ? await this.boothRepository.findOne({ where: { id: activePresence.booth_id, tenant_id: tenantId } })
+      : null;
+    const activeRuleSet = activeBooth ? await this.getRuleSetForBooth(activeBooth) : undefined;
+    const accumulatedPeriods = await this.getAccumulatedPeriodsForCurrentWeek(brokerId, tenantId);
+    const eligibility = await this.checkWeekendEligibility(brokerId, tenantId, activeRuleSet);
     const activeMinutes = activePresence
       ? Math.floor((Date.now() - activePresence.check_in_at.getTime()) / 1000 / 60)
       : 0;
+    const minimumMinutes = activePresence?.minimum_period_minutes || activeRuleSet?.minimum_period_minutes || 120;
 
     return {
       week: 'Segunda a sexta-feira',
       accumulatedPeriods,
       weekendEligibility: eligibility,
-      minimumMinutesPerPeriod: 120,
+      minimumMinutesPerPeriod: minimumMinutes,
       activeShift: activePresence
         ? {
             presenceId: activePresence.id,
             activeMinutes,
-            minimumMinutes: 120,
-            minimumReached: activeMinutes >= 120,
+            minimumMinutes,
+            minimumReached: activeMinutes >= minimumMinutes,
           }
         : null,
     };
@@ -411,18 +454,24 @@ export class PresencesService {
       .where('presence.broker_id = :brokerId', { brokerId })
       .andWhere('presence.tenant_id = :tenantId', { tenantId })
       .andWhere('presence.status = :status', { status: 'completed' })
-      .andWhere('presence.accumulated_minutes >= :minimumMinutes', { minimumMinutes: 120 })
       .andWhere('presence.check_in_at BETWEEN :start AND :end', { start: startOfWeek, end: endOfFriday })
       .getMany();
 
-    // Soma o peso de cada período completado (para suportar pesos dobrados em feriados) [9]
-    const totalPeriods = presences.reduce((sum, presence) => sum + presence.period_weight, 0);
+    const validPresences = presences.filter(
+      (presence) => presence.accumulated_minutes >= presence.minimum_period_minutes,
+    );
+    // Soma o peso vigente salvo em cada presença, permitindo regras diferentes por plantão.
+    const totalPeriods = validPresences.reduce((sum, presence) => sum + presence.period_weight, 0);
 
     return totalPeriods;
   }
 
   // 9. Valida a elegibilidade do corretor para check-in de fim de semana [9]
-  private async checkWeekendEligibility(brokerId: string, tenantId: string): Promise<{ eligible: boolean; accumulated: number; required: number }> {
+  private async checkWeekendEligibility(
+    brokerId: string,
+    tenantId: string,
+    ruleSet?: BoothRuleSet,
+  ): Promise<{ eligible: boolean; accumulated: number; required: number }> {
     const now = new Date();
     const dayOfWeek = now.getDay(); // 0 = Domingo, 6 = Sábado
     const accumulated = await this.getAccumulatedPeriodsForCurrentWeek(brokerId, tenantId);
@@ -434,9 +483,9 @@ export class PresencesService {
     let required = 0;
 
     if (dayOfWeek === 6) {
-      required = 5; // Sábado exige no mínimo 5 períodos [9]
+      required = ruleSet?.saturday_required_periods ?? 5;
     } else if (dayOfWeek === 0) {
-      required = 6; // Domingo exige no mínimo 6 períodos [9]
+      required = ruleSet?.sunday_required_periods ?? 6;
     }
 
     const eligible = accumulated >= required;
@@ -456,6 +505,7 @@ export class PresencesService {
     });
 
     if (!booth || !booth.manager_id) return; // Se não há gerente configurado, ignora
+    const ruleSet = await this.getRuleSetForBooth(booth);
 
     // 2. Conta quantos corretores estão online neste exato momento no plantão [8]
     const onlineBrokersCount = await this.presenceRepository.count({
@@ -463,7 +513,7 @@ export class PresencesService {
     });
 
     // 3. Se a quantidade atual for menor do que o mínimo exigido pela Diretoria: dispara o alerta! [6]
-    if (onlineBrokersCount < booth.min_brokers_required) {
+    if (onlineBrokersCount < ruleSet.minimum_brokers_required) {
       console.log(`[ALERTA PREDITIVO] Plantão '${booth.name}' está com baixa cobertura: apenas ${onlineBrokersCount} corretor(es) ativo(s).`);
 
       // 4. Cria um comunicado de urgência automático na tabela de mensagens para o Gerente responsável [12, 13]
@@ -516,14 +566,15 @@ export class PresencesService {
       .where('presence.broker_id = :brokerId', { brokerId })
       .andWhere('presence.tenant_id = :tenantId', { tenantId })
       .andWhere('presence.status = :status', { status: 'completed' })
-      .andWhere('presence.accumulated_minutes >= :minimumMinutes', { minimumMinutes: 120 })
       .andWhere('presence.check_in_at BETWEEN :start AND :end', { start: startOfMonth, end: endOfMonth })
       .getMany();
 
-    const completedPeriodsWeightSum = completedPresences.reduce((sum, presence) => sum + presence.period_weight, 0);
+    const validCompletedPresences = completedPresences.filter(
+      (presence) => presence.accumulated_minutes >= presence.minimum_period_minutes,
+    );
+    const completedPeriodsWeightSum = validCompletedPresences.reduce((sum, presence) => sum + presence.period_weight, 0);
 
-    // Meta padrão de mercado: Considerando 20 dias úteis no mês (1 período por dia) [9]
-    const availablePeriodsGoal = 20; 
+    const availablePeriodsGoal = validCompletedPresences[0]?.minimum_monthly_periods || 20; 
 
     // Calcula a porcentagem de assiduidade real
     const presencePercentage = Math.round((completedPeriodsWeightSum / availablePeriodsGoal) * 100);
@@ -532,7 +583,7 @@ export class PresencesService {
       brokerId,
       month,
       year,
-      completedPeriods: completedPresences.length,
+      completedPeriods: validCompletedPresences.length,
       completedPeriodsWeightSum,
       monthlyGoal: availablePeriodsGoal,
       presencePercentage: presencePercentage > 100 ? 100 : presencePercentage, // Limita a 100%

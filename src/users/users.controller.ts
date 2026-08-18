@@ -61,6 +61,11 @@ export class UsersController {
     return this.usersService.registerBroker(registerBrokerDto);
   }
 
+  @Get('onboarding-link/:token')
+  async getOnboardingInviteInfo(@Param('token') token: string) {
+    return this.usersService.getOnboardingInviteInfo(token);
+  }
+
   @Get('managers/active')
   @UseGuards(JwtAuthGuard)
   async listActiveManagers(@CurrentUser() currentUser: { role: string }, @TenantId() tenantId: string) {

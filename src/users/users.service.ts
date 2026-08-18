@@ -126,6 +126,16 @@ export class UsersService {
     };
   }
 
+  async getOnboardingInviteInfo(token: string) {
+    const link = await this.linkRepository.findOne({ where: { token, valid_until: MoreThan(new Date()), is_used: false }, relations: { manager: true } });
+    if (!link) throw new BadRequestException('O convite é inválido, expirou ou já foi utilizado.');
+    return {
+      invited_role: link.invited_role,
+      valid_until: link.valid_until,
+      manager: link.manager ? { id: link.manager.id, nome_guerra: link.manager.nome_guerra } : null,
+    };
+  }
+
   async listActiveManagers(tenantId: string) {
     return this.userRepository.find({
       where: { tenant_id: tenantId, role: 'gerencia_level_2', status: 'active' },

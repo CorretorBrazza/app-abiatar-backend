@@ -156,7 +156,7 @@ export class PresencesService {
 
     activePresence.check_out_at = now;
     activePresence.accumulated_minutes = elapsedMinutes;
-    activePresence.status = 'completed';
+    activePresence.status = elapsedMinutes >= 120 ? 'completed' : 'invalidated';
 
     const savedPresence = await this.presenceRepository.save(activePresence);
 
@@ -164,7 +164,9 @@ export class PresencesService {
     await this.checkAndNotifyLowCoverage(activePresence.booth_id, tenantId);
 
     return {
-      message: 'Check-out realizado com sucesso! Turno finalizado.',
+      message: elapsedMinutes >= 120
+        ? 'Check-out realizado com sucesso! Período contabilizado.'
+        : 'Check-out realizado. O período foi invalidado por não atingir o mínimo de 120 minutos.',
       presenceId: savedPresence.id,
       checkInAt: savedPresence.check_in_at,
       checkOutAt: savedPresence.check_out_at,
@@ -409,6 +411,7 @@ export class PresencesService {
       .where('presence.broker_id = :brokerId', { brokerId })
       .andWhere('presence.tenant_id = :tenantId', { tenantId })
       .andWhere('presence.status = :status', { status: 'completed' })
+      .andWhere('presence.accumulated_minutes >= :minimumMinutes', { minimumMinutes: 120 })
       .andWhere('presence.check_in_at BETWEEN :start AND :end', { start: startOfWeek, end: endOfFriday })
       .getMany();
 
@@ -422,13 +425,12 @@ export class PresencesService {
   private async checkWeekendEligibility(brokerId: string, tenantId: string): Promise<{ eligible: boolean; accumulated: number; required: number }> {
     const now = new Date();
     const dayOfWeek = now.getDay(); // 0 = Domingo, 6 = Sábado
-
-    // Se for dia de semana (Segunda a Sexta), o check-in é sempre elegível
-    if (dayOfWeek >= 1 && dayOfWeek <= 5) {
-      return { eligible: true, accumulated: 0, required: 0 };
-    }
-
     const accumulated = await this.getAccumulatedPeriodsForCurrentWeek(brokerId, tenantId);
+    
+    // Em dias úteis o check-in é elegível, mas o acumulado real continua sendo devolvido ao dashboard.
+    if (dayOfWeek >= 1 && dayOfWeek <= 5) {
+      return { eligible: true, accumulated, required: 0 };
+    }
     let required = 0;
 
     if (dayOfWeek === 6) {
@@ -514,6 +516,7 @@ export class PresencesService {
       .where('presence.broker_id = :brokerId', { brokerId })
       .andWhere('presence.tenant_id = :tenantId', { tenantId })
       .andWhere('presence.status = :status', { status: 'completed' })
+      .andWhere('presence.accumulated_minutes >= :minimumMinutes', { minimumMinutes: 120 })
       .andWhere('presence.check_in_at BETWEEN :start AND :end', { start: startOfMonth, end: endOfMonth })
       .getMany();
 

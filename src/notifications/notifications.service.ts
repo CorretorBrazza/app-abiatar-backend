@@ -1,16 +1,28 @@
 // src/notifications/notifications.service.ts
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable, OnModuleInit, BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In } from 'typeorm';
 import { initializeApp, getApps, cert } from 'firebase-admin/app';
 import { PushDeviceToken } from './entities/push-device-token.entity';
 import { RegisterPushTokenDto } from './dto/register-push-token.dto';
+import { SendOperationalPushDto } from './dto/send-operational-push.dto';
+import { User } from '../users/user.entity';
+import { Presence } from '../presences/entities/presence.entity';
+import { BoothReceptionist } from '../booths/entities/booth-receptionist.entity';
+import { AuditService } from '../audit/audit.service';
 
 @Injectable()
 export class NotificationsService implements OnModuleInit {
   constructor(
     @InjectRepository(PushDeviceToken)
     private readonly pushTokenRepository: Repository<PushDeviceToken>,
+    @InjectRepository(User)
+    private readonly userRepository: Repository<User>,
+    @InjectRepository(Presence)
+    private readonly presenceRepository: Repository<Presence>,
+    @InjectRepository(BoothReceptionist)
+    private readonly receptionistRepository: Repository<BoothReceptionist>,
+    private readonly auditService: AuditService,
   ) {}
 
   onModuleInit() {
@@ -89,6 +101,130 @@ export class NotificationsService implements OnModuleInit {
     deviceToken.is_active = false;
     await this.pushTokenRepository.save(deviceToken);
     return { revoked: true };
+  }
+
+  async sendOperationalPush(
+    dto: SendOperationalPushDto,
+    senderId: string,
+    tenantId: string,
+  ) {
+    const sender = await this.userRepository.findOne({ where: { id: senderId, tenant_id: tenantId } });
+    if (!sender) throw new NotFoundException('Remetente não localizado.');
+    if (!['recepcao_level_3', 'gerencia_level_2', 'diretoria_level_1'].includes(sender.role)) {
+      throw new ForbiddenException('Este perfil não pode enviar Push Operacional.');
+    }
+
+    const recipient = await this.userRepository.findOne({
+      where: { id: dto.recipientId, tenant_id: tenantId, role: 'corretor_level_3' },
+    });
+    if (!recipient) throw new NotFoundException('Corretor destinatário não localizado.');
+
+    if (sender.role === 'gerencia_level_2' && recipient.manager_id !== sender.id) {
+      throw new ForbiddenException('O Gerente só pode alertar corretores da própria equipe.');
+    }
+
+    const presence = await this.presenceRepository.findOne({
+      where: {
+        broker_id: recipient.id,
+        tenant_id: tenantId,
+        status: 'online',
+        ...(dto.boothId ? { booth_id: dto.boothId } : {}),
+      },
+    });
+    if (!presence) {
+      throw new BadRequestException('O corretor precisa estar online para receber um Push Operacional.');
+    }
+
+    if (sender.role === 'recepcao_level_3') {
+      const assignment = await this.receptionistRepository.findOne({
+        where: {
+          tenant_id: tenantId,
+          booth_id: presence.booth_id,
+          receptionist_id: sender.id,
+          is_active: true,
+        },
+      });
+      if (!assignment) {
+        throw new ForbiddenException('A Recepção só pode alertar corretores do plantão atribuído a ela.');
+      }
+    }
+
+    const eventId = `operational-${Date.now()}-${recipient.id}`;
+    const pushSentCount = await this.sendToUser(
+      recipient.id,
+      tenantId,
+      dto.title,
+      dto.body,
+      { type: 'operational_push', eventId, boothId: presence.booth_id, presenceId: presence.id },
+    );
+
+    await this.auditService.record(
+      {
+        tenantId,
+        actorUserId: sender.id,
+        actorRole: sender.role,
+        actorEmail: sender.email,
+      },
+      {
+        action: 'OPERATIONAL_PUSH_SENT',
+        entityType: 'User',
+        entityId: recipient.id,
+        success: pushSentCount > 0,
+        reason: 'Alerta operacional imediato para corretor online',
+        metadata: {
+          eventId,
+          recipientId: recipient.id,
+          recipientName: recipient.nome_guerra,
+          boothId: presence.booth_id,
+          presenceId: presence.id,
+          pushSentCount,
+        },
+      },
+    );
+
+    return {
+      message: pushSentCount > 0 ? 'Push Operacional enviado.' : 'Push Operacional registrado, mas nenhum dispositivo ativo confirmou envio.',
+      type: 'operational_push',
+      eventId,
+      recipientId: recipient.id,
+      pushSentCount,
+    };
+  }
+
+  async listOperationalTargets(senderId: string, tenantId: string) {
+    const sender = await this.userRepository.findOne({ where: { id: senderId, tenant_id: tenantId } });
+    if (!sender || !['recepcao_level_3', 'gerencia_level_2', 'diretoria_level_1'].includes(sender.role)) {
+      throw new ForbiddenException('Este perfil não pode consultar destinatários operacionais.');
+    }
+
+    const presences = await this.presenceRepository.find({
+      where: { tenant_id: tenantId, status: 'online' },
+      relations: { broker: true, booth: true },
+      order: { check_in_at: 'ASC' },
+    });
+
+    let allowedBoothIds: Set<string> | null = null;
+    if (sender.role === 'recepcao_level_3') {
+      const assignments = await this.receptionistRepository.find({
+        where: { tenant_id: tenantId, receptionist_id: sender.id, is_active: true },
+      });
+      allowedBoothIds = new Set(assignments.map((assignment) => assignment.booth_id));
+    }
+
+    return presences
+      .filter((presence) => {
+        if (sender.role === 'gerencia_level_2' && presence.broker?.manager_id !== sender.id) return false;
+        if (allowedBoothIds && !allowedBoothIds.has(presence.booth_id)) return false;
+        return true;
+      })
+      .map((presence) => ({
+        recipientId: presence.broker_id,
+        nomeGuerra: presence.broker?.nome_guerra || 'Corretor',
+        boothId: presence.booth_id,
+        boothName: presence.booth?.name || 'Plantão',
+        presenceId: presence.id,
+        checkInAt: presence.check_in_at,
+      }));
   }
 
   async sendToUser(

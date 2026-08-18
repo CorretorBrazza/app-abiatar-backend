@@ -1,6 +1,10 @@
 // src/notifications/notifications.module.ts
 import { Module, Global } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { User } from '../users/user.entity';
+import { Presence } from '../presences/entities/presence.entity';
+import { BoothReceptionist } from '../booths/entities/booth-receptionist.entity';
+import { AuditModule } from '../audit/audit.module';
 import { NotificationsService } from './notifications.service';
 import { PushDeviceToken } from './entities/push-device-token.entity';
 import { NotificationsController } from './notifications.controller';
@@ -9,8 +13,9 @@ import { AuthModule } from '../auth/auth.module';
 @Global() // Torna o módulo global em todo o projeto
 @Module({
   imports: [
-    TypeOrmModule.forFeature([PushDeviceToken]),
+    TypeOrmModule.forFeature([PushDeviceToken, User, Presence, BoothReceptionist]),
     AuthModule,
+    AuditModule,
   ],
   controllers: [NotificationsController],
   providers: [NotificationsService],

@@ -282,9 +282,32 @@ export class NotificationsService implements OnModuleInit {
 
     try {
       const { getMessaging } = await import('firebase-admin/messaging');
+      const isOperational = data?.type === 'operational_push';
+      const targetUrl = isOperational
+        ? 'https://abiatar.bitimob.com.br/'
+        : 'https://abiatar.bitimob.com.br/#/inbox';
+      const stringifiedData = {
+        ...(data ? this.stringifyProperties(data) : {}),
+        url: targetUrl,
+      };
       await getMessaging().send({
         notification: { title, body },
-        data: data ? this.stringifyProperties(data) : {},
+        webpush: {
+          headers: {
+            Urgency: isOperational ? 'high' : 'normal',
+            TTL: '86400',
+          },
+          notification: {
+            title,
+            body,
+            icon: 'https://abiatar.bitimob.com.br/icon.png',
+            badge: 'https://abiatar.bitimob.com.br/icon.png',
+            tag: isOperational ? `operational-${data?.eventId || Date.now()}` : `message-${data?.messageId || Date.now()}`,
+            requireInteraction: isOperational,
+          },
+          fcmOptions: { link: targetUrl },
+        },
+        data: stringifiedData,
         token: fcmToken,
       });
       return true;

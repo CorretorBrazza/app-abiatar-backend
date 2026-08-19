@@ -298,6 +298,23 @@ export class UsersService {
     return user;
   }
 
+  async removeManagementUser(userId: string, reason: string, actor: { sub: string; role: string }, tenantId: string) {
+    const user = await this.userRepository.findOne({ where: { id: userId, tenant_id: tenantId, role: In(['gerencia_level_2', 'recepcao_level_3']), removed_at: IsNull() } });
+    if (!user) throw new NotFoundException('Usuário de gestão não encontrado ou já removido.');
+    const before = { status: user.status, role: user.role, manager_id: user.manager_id };
+    user.status = 'inactive';
+    user.leads_paused = true;
+    user.leads_pause_reason = reason.trim();
+    user.removed_at = new Date();
+    user.removed_by = actor.sub;
+    const saved = await this.userRepository.save(user);
+    void this.auditService.record({ tenantId, actorUserId: actor.sub, actorRole: actor.role }, {
+      action: 'USER_REMOVED', entityType: 'USER', entityId: saved.id, beforeData: before,
+      afterData: { status: saved.status, role: saved.role, removed_at: saved.removed_at, manager_id: saved.manager_id }, reason: reason.trim(),
+    });
+    return { message: 'Usuário removido da operação sem apagar o histórico.', userId: saved.id, role: saved.role };
+  }
+
   async updateManagementUser(userId: string, dto: { name?: string; nomeGuerra?: string }, tenantId: string) {
     const user = await this.userRepository.findOne({ where: { id: userId, tenant_id: tenantId, role: In(['gerencia_level_2', 'recepcao_level_3']), removed_at: IsNull() } });
     if (!user) throw new NotFoundException('Usuário de gestão não encontrado.');

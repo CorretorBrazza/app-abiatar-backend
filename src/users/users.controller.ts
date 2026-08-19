@@ -110,6 +110,20 @@ export class UsersController {
     return this.usersService.updateManagementUser(userId, dto, tenantId);
   }
 
+  @Delete('management-user/:id')
+  @UseGuards(JwtAuthGuard)
+  async removeManagementUser(
+    @Param('id') userId: string,
+    @Body() body: { reason?: string },
+    @CurrentUser() currentUser: { sub: string; role: string },
+    @TenantId() tenantId: string,
+  ) {
+    if (currentUser.role !== 'diretoria_level_1') {
+      throw new ForbiddenException('Somente a Diretoria pode excluir Gerentes ou Recepção.');
+    }
+    return this.usersService.removeManagementUser(userId, body?.reason || 'Exclusão solicitada pela Diretoria', currentUser, tenantId);
+  }
+
   @Get('managers/active')
   @UseGuards(JwtAuthGuard)
   async listActiveManagers(@CurrentUser() currentUser: { role: string }, @TenantId() tenantId: string) {

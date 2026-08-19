@@ -106,6 +106,7 @@ export class UsersService {
       password_hash: passwordHashed,
       role: 'recepcao_level_3',
       status: 'active',
+      must_change_password: true,
     });
     const savedReceptionist = await this.userRepository.save(receptionist);
     void this.auditService.record({ tenantId }, {

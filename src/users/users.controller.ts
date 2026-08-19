@@ -1,5 +1,5 @@
 // src/users/users.controller.ts
-import { Controller, Post, Get, Patch, Body, Param, UseGuards, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { Controller, Post, Get, Patch, Delete, Body, Param, UseGuards, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { RegisterBrokerDto } from './dto/register-broker.dto';
 import { ApproveBrokerDto } from './dto/approve-broker.dto';
@@ -7,6 +7,7 @@ import { CreateManagerDto } from './dto/create-manager.dto';
 import { CreateReceptionistDto } from './dto/create-receptionist.dto';
 import { CreateOnboardingLinkDto } from './dto/create-onboarding-link.dto';
 import { RegisterManagerDto } from './dto/register-manager.dto';
+import { TransferBrokerDto, UpdateBrokerLeadPauseDto, UpdateBrokerProfileDto } from './dto/update-broker-profile.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { TenantId } from '../auth/decorators/tenant-id.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator'; // (Opcional - criaremos na sequência se necessário, ou usamos request.user)
@@ -131,6 +132,71 @@ export class UsersController {
   ) {
     const effectiveManagerId = this.resolveManagerId(managerId, currentUser);
     return this.usersService.findTeam(effectiveManagerId, tenantId);
+  }
+
+  @Get(':id/management-profile')
+  @UseGuards(JwtAuthGuard)
+  async getBrokerManagementProfile(
+    @Param('id') brokerId: string,
+    @CurrentUser() currentUser: { sub: string; role: string },
+    @TenantId() tenantId: string,
+  ) {
+    return this.usersService.getBrokerManagementProfile(brokerId, currentUser, tenantId);
+  }
+
+  @Patch(':id/management-profile')
+  @UseGuards(JwtAuthGuard)
+  async updateBrokerProfile(
+    @Param('id') brokerId: string,
+    @Body() dto: UpdateBrokerProfileDto,
+    @CurrentUser() currentUser: { sub: string; role: string },
+    @TenantId() tenantId: string,
+  ) {
+    return this.usersService.updateBrokerProfile(brokerId, dto, currentUser, tenantId);
+  }
+
+  @Patch(':id/leads-pause')
+  @UseGuards(JwtAuthGuard)
+  async pauseBrokerLeads(
+    @Param('id') brokerId: string,
+    @Body() dto: UpdateBrokerLeadPauseDto,
+    @CurrentUser() currentUser: { sub: string; role: string },
+    @TenantId() tenantId: string,
+  ) {
+    return this.usersService.setBrokerLeadPause(brokerId, true, dto, currentUser, tenantId);
+  }
+
+  @Patch(':id/leads-resume')
+  @UseGuards(JwtAuthGuard)
+  async resumeBrokerLeads(
+    @Param('id') brokerId: string,
+    @Body() dto: UpdateBrokerLeadPauseDto,
+    @CurrentUser() currentUser: { sub: string; role: string },
+    @TenantId() tenantId: string,
+  ) {
+    return this.usersService.setBrokerLeadPause(brokerId, false, dto, currentUser, tenantId);
+  }
+
+  @Delete(':id')
+  @UseGuards(JwtAuthGuard)
+  async removeBroker(
+    @Param('id') brokerId: string,
+    @Body() body: { reason?: string },
+    @CurrentUser() currentUser: { sub: string; role: string },
+    @TenantId() tenantId: string,
+  ) {
+    return this.usersService.removeBroker(brokerId, body?.reason || 'Removido pela gestão', currentUser, tenantId);
+  }
+
+  @Patch(':id/transfer')
+  @UseGuards(JwtAuthGuard)
+  async transferBroker(
+    @Param('id') brokerId: string,
+    @Body() dto: TransferBrokerDto,
+    @CurrentUser() currentUser: { sub: string; role: string },
+    @TenantId() tenantId: string,
+  ) {
+    return this.usersService.transferBroker(brokerId, dto, currentUser, tenantId);
   }
 
   // ROTA EXCLUSIVA DE TESTES (PÚBLICA): Força o encerramento de carências e ativação imediata [10]

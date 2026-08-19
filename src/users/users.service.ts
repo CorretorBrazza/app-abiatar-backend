@@ -1,7 +1,7 @@
 // src/users/users.service.ts
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, MoreThan, LessThanOrEqual, Raw } from 'typeorm';
+import { Repository, MoreThan, LessThanOrEqual, Raw, IsNull } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
 import { Cron, CronExpression } from '@nestjs/schedule';
@@ -12,6 +12,7 @@ import { RegisterBrokerDto } from './dto/register-broker.dto';
 import { CreateManagerDto } from './dto/create-manager.dto';
 import { CreateReceptionistDto } from './dto/create-receptionist.dto';
 import { ApproveBrokerDto } from './dto/approve-broker.dto';
+import { TransferBrokerDto, UpdateBrokerLeadPauseDto, UpdateBrokerProfileDto } from './dto/update-broker-profile.dto';
 import { NotificationsService } from '../notifications/notifications.service';
 import { AuditService } from '../audit/audit.service';
 
@@ -283,8 +284,8 @@ export class UsersService {
   async findPendingApprovals(managerId: string | null, tenantId: string): Promise<User[]> {
     return this.userRepository.find({
       where: managerId
-        ? { manager_id: managerId, tenant_id: tenantId, status: 'inactive' }
-        : { tenant_id: tenantId, role: 'corretor_level_3', status: 'inactive' },
+        ? { manager_id: managerId, tenant_id: tenantId, status: 'inactive', removed_at: IsNull() }
+        : { tenant_id: tenantId, role: 'corretor_level_3', status: 'inactive', removed_at: IsNull() },
       order: { name: 'ASC' },
     });
   }
@@ -335,12 +336,141 @@ export class UsersService {
     };
   }
 
+  private async getBrokerForManagement(
+    brokerId: string,
+    actor: { sub: string; role: string },
+    tenantId: string,
+  ): Promise<User> {
+    const broker = await this.userRepository.findOne({
+      where: { id: brokerId, tenant_id: tenantId, role: 'corretor_level_3' },
+    });
+    if (!broker || broker.removed_at) throw new NotFoundException('Corretor não encontrado ou já removido.');
+    if (actor.role === 'gerencia_level_2' && broker.manager_id !== actor.sub) {
+      throw new NotFoundException('Corretor não pertence à sua gerência.');
+    }
+    if (!['diretoria_level_1', 'gerencia_level_2', 'platform_admin_level_0'].includes(actor.role)) {
+      throw new BadRequestException('Perfil sem permissão para gerenciar Corretores.');
+    }
+    return broker;
+  }
+
+  async getBrokerManagementProfile(brokerId: string, actor: { sub: string; role: string }, tenantId: string) {
+    const broker = await this.getBrokerForManagement(brokerId, actor, tenantId);
+    const manager = broker.manager_id ? await this.userRepository.findOne({ where: { id: broker.manager_id, tenant_id: tenantId } }) : null;
+    return {
+      id: broker.id,
+      name: broker.name,
+      nome_guerra: broker.nome_guerra,
+      email: broker.email,
+      creci: broker.creci,
+      role: broker.role,
+      status: broker.status,
+      manager_id: broker.manager_id,
+      manager_nome_guerra: manager?.nome_guerra || null,
+      leads_paused: broker.leads_paused,
+      leads_pause_reason: broker.leads_pause_reason,
+      removed_at: broker.removed_at,
+      carencia_ends_at: broker.carencia_ends_at,
+      created_at: broker.created_at,
+      updated_at: broker.updated_at,
+    };
+  }
+
+  async updateBrokerProfile(
+    brokerId: string,
+    dto: UpdateBrokerProfileDto,
+    actor: { sub: string; role: string },
+    tenantId: string,
+  ) {
+    const broker = await this.getBrokerForManagement(brokerId, actor, tenantId);
+    const before = { name: broker.name, nome_guerra: broker.nome_guerra, email: broker.email, creci: broker.creci };
+    if (dto.email && dto.email !== broker.email) {
+      const existingEmail = await this.userRepository.findOne({ where: { email: dto.email } });
+      if (existingEmail && existingEmail.id !== broker.id) throw new BadRequestException('Este e-mail já está em uso.');
+    }
+    if (dto.nomeGuerra) {
+      const normalized = this.normalizeNomeGuerra(dto.nomeGuerra);
+      const existing = await this.userRepository.findOne({
+        where: { nome_guerra: Raw((alias) => `LOWER(${alias}) = LOWER(:nomeGuerra)`, { nomeGuerra: normalized }), tenant_id: tenantId },
+      });
+      if (existing && existing.id !== broker.id) throw new BadRequestException(`O nome de guerra '${normalized}' já está em uso nesta empresa.`);
+      broker.nome_guerra = normalized;
+    }
+    if (dto.name !== undefined) broker.name = dto.name.trim();
+    if (dto.email !== undefined) broker.email = dto.email.trim().toLowerCase();
+    if (dto.creci !== undefined) broker.creci = dto.creci.trim().toUpperCase();
+    const saved = await this.userRepository.save(broker);
+    void this.auditService.record({ tenantId, actorUserId: actor.sub, actorRole: actor.role }, {
+      action: 'BROKER_PROFILE_UPDATED', entityType: 'USER', entityId: saved.id, beforeData: before,
+      afterData: { name: saved.name, nome_guerra: saved.nome_guerra, email: saved.email, creci: saved.creci },
+    });
+    return this.getBrokerManagementProfile(saved.id, actor, tenantId);
+  }
+
+  async setBrokerLeadPause(
+    brokerId: string,
+    paused: boolean,
+    dto: UpdateBrokerLeadPauseDto,
+    actor: { sub: string; role: string },
+    tenantId: string,
+  ) {
+    const broker = await this.getBrokerForManagement(brokerId, actor, tenantId);
+    const before = { leads_paused: broker.leads_paused, leads_pause_reason: broker.leads_pause_reason };
+    broker.leads_paused = paused;
+    broker.leads_pause_reason = paused ? dto.reason.trim() : null;
+    const saved = await this.userRepository.save(broker);
+    void this.auditService.record({ tenantId, actorUserId: actor.sub, actorRole: actor.role }, {
+      action: paused ? 'BROKER_LEADS_PAUSED' : 'BROKER_LEADS_RESUMED', entityType: 'USER', entityId: saved.id,
+      beforeData: before, afterData: { leads_paused: saved.leads_paused, leads_pause_reason: saved.leads_pause_reason }, reason: dto.reason,
+    });
+    return this.getBrokerManagementProfile(saved.id, actor, tenantId);
+  }
+
+  async removeBroker(brokerId: string, reason: string, actor: { sub: string; role: string }, tenantId: string) {
+    const broker = await this.getBrokerForManagement(brokerId, actor, tenantId);
+    broker.status = 'inactive';
+    broker.leads_paused = true;
+    broker.leads_pause_reason = reason.trim();
+    broker.removed_at = new Date();
+    broker.removed_by = actor.sub;
+    const saved = await this.userRepository.save(broker);
+    void this.auditService.record({ tenantId, actorUserId: actor.sub, actorRole: actor.role }, {
+      action: 'BROKER_REMOVED', entityType: 'USER', entityId: saved.id,
+      beforeData: { status: 'active', manager_id: saved.manager_id },
+      afterData: { status: saved.status, removed_at: saved.removed_at, manager_id: saved.manager_id }, reason: reason.trim(),
+    });
+    return { message: 'Corretor removido da operação sem apagar o histórico.', brokerId: saved.id };
+  }
+
+  async transferBroker(
+    brokerId: string,
+    dto: TransferBrokerDto,
+    actor: { sub: string; role: string },
+    tenantId: string,
+  ) {
+    if (!['diretoria_level_1', 'platform_admin_level_0'].includes(actor.role)) {
+      throw new BadRequestException('Somente a Diretoria pode transferir Corretores.');
+    }
+    const broker = await this.getBrokerForManagement(brokerId, actor, tenantId);
+    const manager = await this.userRepository.findOne({ where: { id: dto.managerId, tenant_id: tenantId, role: 'gerencia_level_2', status: 'active' } });
+    if (!manager || manager.removed_at) throw new BadRequestException('O Gerente selecionado não está ativo neste tenant.');
+    const beforeManagerId = broker.manager_id;
+    broker.manager_id = manager.id;
+    const saved = await this.userRepository.save(broker);
+    void this.auditService.record({ tenantId, actorUserId: actor.sub, actorRole: actor.role }, {
+      action: 'BROKER_TRANSFERRED', entityType: 'USER', entityId: saved.id,
+      beforeData: { manager_id: beforeManagerId }, afterData: { manager_id: saved.manager_id, manager_nome_guerra: manager.nome_guerra }, reason: dto.reason || null,
+    });
+    return this.getBrokerManagementProfile(saved.id, actor, tenantId);
+  }
+
   // 5. Gerente lista os corretores ativos e em carência do seu time
   async findTeam(managerId: string, tenantId: string): Promise<User[]> {
     return this.userRepository.createQueryBuilder('user')
       .where('user.manager_id = :managerId', { managerId })
       .andWhere('user.tenant_id = :tenantId', { tenantId })
       .andWhere('user.status IN (:...statuses)', { statuses: ['active', 'grace_period'] })
+      .andWhere('user.removed_at IS NULL')
       .orderBy('user.name', 'ASC')
       .getMany();
   }
@@ -415,14 +545,15 @@ export class UsersService {
       const isOutOfCarencia = broker.status === 'active'; // Ativo = fora da carência [10]
 
       // D. A REGRA DE OURO: Só está habilitado se estiver presente E fora da carência [8, 10]
-      const isHabilitado = isPresent && isOutOfCarencia;
+      const isHabilitado = isPresent && isOutOfCarencia && !broker.leads_paused && !broker.removed_at;
 
       queue.push({
         brokerId: broker.id,
         nomeGuerra: broker.nome_guerra,
         managerName: managerName,
         statusPresenca: isPresent ? `🟢 ONLINE (${activePresence.booth.name})` : '🔴 OFFLINE',
-        statusCarencia: broker.status === 'grace_period' ? '🟡 EM CARÊNCIA' : (isOutOfCarencia ? '🟢 ATIVO' : '🔴 INATIVO'),
+        statusCarencia: broker.removed_at ? '⚫ REMOVIDO' : (broker.status === 'grace_period' ? '🟡 EM CARÊNCIA' : (isOutOfCarencia ? '🟢 ATIVO' : '🔴 INATIVO')),
+        leadsPaused: broker.leads_paused,
         isHabilitado: isHabilitado ? '🟢 HABILITADO' : '🔴 BLOQUEADO',
         dataAtualizacao: new Date().toLocaleDateString('pt-BR'),
       });

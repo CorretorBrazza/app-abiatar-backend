@@ -56,6 +56,18 @@ export class User {
   })
   status: string;
 
+  @Column({ default: false })
+  leads_paused: boolean;
+
+  @Column({ type: 'varchar', length: 240, nullable: true })
+  leads_pause_reason: string | null;
+
+  @Column({ type: 'timestamp', nullable: true })
+  removed_at: Date | null;
+
+  @Column({ type: 'uuid', nullable: true })
+  removed_by: string | null;
+
   @Column({ type: 'timestamp', nullable: true })
   carencia_ends_at: Date;
 

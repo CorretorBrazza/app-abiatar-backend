@@ -1,7 +1,7 @@
 // src/users/users.service.ts
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, MoreThan, LessThanOrEqual, Raw, IsNull } from 'typeorm';
+import { Repository, MoreThan, LessThanOrEqual, Raw, IsNull, In, Not } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
 import { Cron, CronExpression } from '@nestjs/schedule';
@@ -278,6 +278,38 @@ export class UsersService {
     return {
       message: 'Seu cadastro foi enviado! Aguarde a aprovação do seu gerente para acessar o sistema.',
     };
+  }
+
+  async listManagementUsers(role: string, tenantId: string) {
+    return this.userRepository.find({
+      where: { tenant_id: tenantId, role, removed_at: IsNull() },
+      select: { id: true, name: true, nome_guerra: true, email: true, role: true, status: true, manager_id: true },
+      order: { nome_guerra: 'ASC' },
+    });
+  }
+
+  async getManagementUser(userId: string, tenantId: string) {
+    const user = await this.userRepository.findOne({
+      where: { id: userId, tenant_id: tenantId, role: In(['gerencia_level_2', 'recepcao_level_3']), removed_at: IsNull() },
+      select: { id: true, name: true, nome_guerra: true, email: true, role: true, status: true, manager_id: true },
+    });
+    if (!user) throw new NotFoundException('Usuário de gestão não encontrado.');
+    return user;
+  }
+
+  async updateManagementUser(userId: string, dto: { name?: string; nomeGuerra?: string }, tenantId: string) {
+    const user = await this.userRepository.findOne({ where: { id: userId, tenant_id: tenantId, role: In(['gerencia_level_2', 'recepcao_level_3']), removed_at: IsNull() } });
+    if (!user) throw new NotFoundException('Usuário de gestão não encontrado.');
+    if (dto.name?.trim()) user.name = dto.name.trim();
+    if (dto.nomeGuerra?.trim()) {
+      const normalized = this.normalizeNomeGuerra(dto.nomeGuerra);
+      const existing = await this.userRepository.findOne({ where: { tenant_id: tenantId, nome_guerra: Raw((alias) => `LOWER(${alias}) = LOWER(:nomeGuerra)`, { nomeGuerra: normalized }), id: Not(userId) } });
+      if (existing) throw new BadRequestException('Este Nome de Guerra já está em uso nesta empresa.');
+      user.nome_guerra = normalized;
+    }
+    const saved = await this.userRepository.save(user);
+    void this.auditService.record({ tenantId }, { action: 'USER_PROFILE_UPDATED', entityType: 'USER', entityId: saved.id, afterData: { name: saved.name, nome_guerra: saved.nome_guerra, role: saved.role } });
+    return { message: 'Perfil atualizado com sucesso.', user: { id: saved.id, name: saved.name, nome_guerra: saved.nome_guerra, email: saved.email, role: saved.role } };
   }
 
   // 3. Gerente lista os corretores pendentes de aprovação da sua equipe

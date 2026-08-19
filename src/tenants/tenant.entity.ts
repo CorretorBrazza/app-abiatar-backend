@@ -29,6 +29,9 @@ export class Tenant {
   @Column({ length: 7, default: '#000000' })
   secondary_color: string;
 
+  @Column({ type: 'jsonb', default: () => "'{}'::jsonb" })
+  settings: Record<string, any>;
+
   @Column({
     type: 'enum',
     enum: ['active', 'inactive', 'suspended', 'trial'],

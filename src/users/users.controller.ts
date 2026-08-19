@@ -1,5 +1,5 @@
 // src/users/users.controller.ts
-import { Controller, Post, Get, Patch, Delete, Body, Param, UseGuards, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { Controller, Post, Get, Patch, Delete, Body, Param, Query, UseGuards, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { RegisterBrokerDto } from './dto/register-broker.dto';
 import { ApproveBrokerDto } from './dto/approve-broker.dto';
@@ -65,6 +65,49 @@ export class UsersController {
   @Get('onboarding-link/:token')
   async getOnboardingInviteInfo(@Param('token') token: string) {
     return this.usersService.getOnboardingInviteInfo(token);
+  }
+
+  @Get('management-users')
+  @UseGuards(JwtAuthGuard)
+  async listManagementUsers(
+    @Query('role') role: string,
+    @CurrentUser() currentUser: { sub: string; role: string },
+    @TenantId() tenantId: string,
+  ) {
+    if (currentUser.role !== 'diretoria_level_1') {
+      throw new ForbiddenException('Somente a Diretoria pode consultar os cards de Gerentes e Recepcionistas.');
+    }
+    if (!['gerencia_level_2', 'recepcao_level_3'].includes(role)) {
+      throw new ForbiddenException('Perfil de gestão inválido.');
+    }
+    return this.usersService.listManagementUsers(role, tenantId);
+  }
+
+  @Get('management-user/:id')
+  @UseGuards(JwtAuthGuard)
+  async getManagementUser(
+    @Param('id') userId: string,
+    @CurrentUser() currentUser: { role: string },
+    @TenantId() tenantId: string,
+  ) {
+    if (currentUser.role !== 'diretoria_level_1') {
+      throw new ForbiddenException('Somente a Diretoria pode abrir estes cards.');
+    }
+    return this.usersService.getManagementUser(userId, tenantId);
+  }
+
+  @Patch('management-user/:id')
+  @UseGuards(JwtAuthGuard)
+  async updateManagementUser(
+    @Param('id') userId: string,
+    @Body() dto: { name?: string; nomeGuerra?: string },
+    @CurrentUser() currentUser: { role: string },
+    @TenantId() tenantId: string,
+  ) {
+    if (currentUser.role !== 'diretoria_level_1') {
+      throw new ForbiddenException('Somente a Diretoria pode editar estes cards.');
+    }
+    return this.usersService.updateManagementUser(userId, dto, tenantId);
   }
 
   @Get('managers/active')

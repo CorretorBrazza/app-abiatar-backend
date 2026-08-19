@@ -139,6 +139,14 @@ export class AuthService {
       throw new UnauthorizedException('E-mail ou senha incorretos.');
     }
 
+    if (user.role === 'corretor_level_3' && user.status === 'inactive') {
+      void this.auditService.record({ tenantId: user.tenant_id, actorUserId: user.id, actorRole: user.role, actorEmail: user.email }, {
+        action: 'LOGIN_BLOCKED_PENDING_APPROVAL', entityType: 'AUTHENTICATION', entityId: user.id, success: false,
+        reason: 'Corretor ainda aguarda aprovação da Gerência',
+      });
+      throw new UnauthorizedException('Seu cadastro ainda aguarda aprovação da Gerência responsável.');
+    }
+
     // Compara a senha enviada com a senha criptografada do banco
     const isPasswordValid = await bcrypt.compare(dto.passwordHash, user.password_hash);
     if (!isPasswordValid) {

@@ -116,8 +116,8 @@ export class UsersController {
     @CurrentUser() currentUser: { sub: string; role: string },
     @TenantId() tenantId: string,
   ) {
-    if (!['diretoria_level_1', 'gerencia_level_2', 'platform_admin_level_0'].includes(currentUser.role)) {
-      throw new ForbiddenException('Apenas a Diretoria ou a Gerência podem aprovar Corretores.');
+    if (currentUser.role !== 'gerencia_level_2') {
+      throw new ForbiddenException('Somente a Gerência responsável pode aprovar Corretores.');
     }
     return this.usersService.approveBroker(brokerId, approveBrokerDto, currentUser, tenantId);
   }

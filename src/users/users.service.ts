@@ -317,21 +317,30 @@ export class UsersService {
     const carenciaExpiration = new Date();
     carenciaExpiration.setDate(carenciaExpiration.getDate() + dto.carenciaDays);
 
-    // Atualiza o status do corretor para 'grace_period' (Carência ativa)
-    broker.status = 'grace_period';
-    broker.carencia_ends_at = carenciaExpiration;
+    if (dto.carenciaDays === 0) {
+      broker.status = 'active';
+      broker.carencia_ends_at = null;
+    } else {
+      broker.status = 'grace_period';
+      broker.carencia_ends_at = carenciaExpiration;
+    }
 
     await this.userRepository.save(broker);
+    const approvalMessage = dto.carenciaDays === 0
+      ? 'Seu cadastro foi aprovado sem carência. Você poderá atuar conforme as regras de presença e elegibilidade.'
+      : `Seu cadastro foi aprovado. Sua carência termina em ${carenciaExpiration.toLocaleDateString('pt-BR')}.`;
     void this.notificationsService.sendToUser(
       broker.id,
       tenantId,
       'Cadastro aprovado',
-      `Seu cadastro foi aprovado. Sua carência termina em ${carenciaExpiration.toLocaleDateString('pt-BR')}.`,
+      approvalMessage,
       { type: 'broker_approved', brokerId: broker.id, carenciaDays: dto.carenciaDays, approvedBy: approver.sub, approvedByRole: approver.role },
     );
 
     return {
-      message: `Corretor '${broker.nome_guerra}' aprovado com sucesso! Carência definida por ${dto.carenciaDays} dias.`,
+      message: dto.carenciaDays === 0
+        ? `Corretor '${broker.nome_guerra}' aprovado sem carência.`
+        : `Corretor '${broker.nome_guerra}' aprovado com sucesso! Carência definida por ${dto.carenciaDays} dias.`,
       carencia_ends_at: broker.carencia_ends_at,
     };
   }

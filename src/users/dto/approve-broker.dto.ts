@@ -5,6 +5,6 @@ import { Type } from 'class-transformer';
 export class ApproveBrokerDto {
   @Type(() => Number)
   @IsInt()
-  @IsIn([7, 15, 30])
+  @IsIn([0, 7, 15, 30])
   carenciaDays: number;
 }

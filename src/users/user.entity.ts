@@ -69,7 +69,7 @@ export class User {
   removed_by: string | null;
 
   @Column({ type: 'timestamp', nullable: true })
-  carencia_ends_at: Date;
+  carencia_ends_at: Date | null;
 
   @Column({ default: false })
   must_change_password: boolean;

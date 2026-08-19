@@ -14,8 +14,8 @@ export class CreateMessageDto {
   @IsBoolean()
   isUrgent?: boolean;
 
-  @IsIn(['all_brokers', 'all_managers', 'specific_team', 'individual'])
-  scope: 'all_brokers' | 'all_managers' | 'specific_team' | 'individual';
+  @IsIn(['all_users', 'all_brokers', 'all_managers', 'all_receptionists', 'specific_team', 'individual'])
+  scope: 'all_users' | 'all_brokers' | 'all_managers' | 'all_receptionists' | 'specific_team' | 'individual';
 
   @IsOptional()
   @IsUUID()

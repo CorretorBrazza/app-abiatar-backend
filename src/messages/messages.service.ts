@@ -1,5 +1,5 @@
 // src/messages/messages.service.ts
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, In, IsNull } from 'typeorm'; // <-- ADICIONADO "IsNull" AQUI
 
@@ -23,8 +23,20 @@ export class MessagesService {
     private notificationsService: NotificationsService,
   ) {}
 
+  async listRecipients(tenantId: string) {
+    return this.userRepository.find({
+      where: { tenant_id: tenantId, status: 'active' },
+      select: { id: true, name: true, nome_guerra: true, email: true, role: true, manager_id: true },
+      order: { role: 'ASC', nome_guerra: 'ASC' },
+    });
+  }
+
   // 1. Envia um comunicado oficial roteando os destinatários de forma dinâmica por escopo [12]
-  async createMessage(dto: CreateMessageDto, senderId: string, tenantId: string) {
+  async createMessage(dto: CreateMessageDto, sender: { id: string; role: string }, tenantId: string) {
+    if (!['diretoria_level_1', 'platform_admin_level_0'].includes(sender.role)) {
+      throw new ForbiddenException('Somente a Diretoria pode enviar comunicados institucionais.');
+    }
+    const senderId = sender.id;
     // A. Cria e salva o registro master da Mensagem
     const message = this.messageRepository.create({
       tenant_id: tenantId,
@@ -39,13 +51,19 @@ export class MessagesService {
     let recipientUsers: User[] = [];
 
     // B. MOTOR DE ROTEAMENTO: Identifica os destinatários pelo Escopo do DTO [12]
-    if (dto.scope === 'all_brokers') {
+    if (dto.scope === 'all_users') {
+      recipientUsers = await this.userRepository.find({ where: { tenant_id: tenantId, status: 'active' } });
+    } else if (dto.scope === 'all_brokers') {
       recipientUsers = await this.userRepository.find({
         where: { tenant_id: tenantId, role: 'corretor_level_3' },
       });
     } else if (dto.scope === 'all_managers') {
       recipientUsers = await this.userRepository.find({
-        where: { tenant_id: tenantId, role: 'gerencia_level_2' },
+        where: { tenant_id: tenantId, role: 'gerencia_level_2', status: 'active' },
+      });
+    } else if (dto.scope === 'all_receptionists') {
+      recipientUsers = await this.userRepository.find({
+        where: { tenant_id: tenantId, role: 'recepcao_level_3', status: 'active' },
       });
     } else if (dto.scope === 'specific_team') {
       if (!dto.targetManagerId) {

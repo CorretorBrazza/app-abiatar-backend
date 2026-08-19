@@ -12,13 +12,18 @@ export class MessagesController {
   constructor(private readonly messagesService: MessagesService) {}
 
   // 1. Envia um novo comunicado (Diretoria ou Gerência) - CHAMA DIRETAMENTE O SERVIÇO AGORA [12]
+  @Get('recipients')
+  async listRecipients(@TenantId() tenantId: string) {
+    return this.messagesService.listRecipients(tenantId);
+  }
+
   @Post()
   async createMessage(
     @Body() createMessageDto: CreateMessageDto,
-    @CurrentUser('sub') senderId: string,
+    @CurrentUser() currentUser: { sub: string; role: string },
     @TenantId() tenantId: string,
   ) {
-    return this.messagesService.createMessage(createMessageDto, senderId, tenantId);
+    return this.messagesService.createMessage(createMessageDto, { id: currentUser.sub, role: currentUser.role }, tenantId);
   }
 
   // 2. Busca a Caixa de Entrada do usuário logado [12]

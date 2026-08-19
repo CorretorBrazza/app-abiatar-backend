@@ -1,7 +1,7 @@
 // src/users/users.service.ts
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, MoreThan, LessThanOrEqual } from 'typeorm';
+import { Repository, MoreThan, LessThanOrEqual, Raw } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
 import { Cron, CronExpression } from '@nestjs/schedule';
@@ -27,25 +27,30 @@ export class UsersService {
     private auditService: AuditService,
   ) {}
 
+  private normalizeNomeGuerra(value: string): string {
+    return value.trim().replace(/\s+/g, ' ').toLocaleUpperCase('pt-BR');
+  }
+
   // Cria um gerente somente a partir de uma diretoria autenticada.
   async createManager(dto: CreateManagerDto, tenantId: string) {
+    const normalizedNomeGuerra = this.normalizeNomeGuerra(dto.nomeGuerra);
     const existingEmail = await this.userRepository.findOne({ where: { email: dto.email } });
     if (existingEmail) {
       throw new BadRequestException('Este e-mail de usuário já está cadastrado.');
     }
 
     const existingNomeGuerra = await this.userRepository.findOne({
-      where: { nome_guerra: dto.nomeGuerra, tenant_id: tenantId },
+      where: { nome_guerra: Raw((alias) => `LOWER(${alias}) = LOWER(:nomeGuerra)`, { nomeGuerra: normalizedNomeGuerra }), tenant_id: tenantId },
     });
     if (existingNomeGuerra) {
-      throw new BadRequestException(`O nome de guerra '${dto.nomeGuerra}' já está em uso nesta empresa.`);
+      throw new BadRequestException(`O nome de guerra '${normalizedNomeGuerra}' já está em uso nesta empresa.`);
     }
 
     const passwordHashed = await bcrypt.hash(dto.passwordHash, await bcrypt.genSalt(10));
     const manager = this.userRepository.create({
       tenant_id: tenantId,
       name: dto.name,
-      nome_guerra: dto.nomeGuerra,
+      nome_guerra: normalizedNomeGuerra,
       email: dto.email,
       password_hash: passwordHashed,
       role: 'gerencia_level_2',
@@ -78,23 +83,24 @@ export class UsersService {
   }
 
   async createReceptionist(dto: CreateReceptionistDto, tenantId: string) {
+    const normalizedNomeGuerra = this.normalizeNomeGuerra(dto.nomeGuerra);
     const existingEmail = await this.userRepository.findOne({ where: { email: dto.email } });
     if (existingEmail) {
       throw new BadRequestException('Este e-mail de usuário já está cadastrado.');
     }
 
     const existingNomeGuerra = await this.userRepository.findOne({
-      where: { nome_guerra: dto.nomeGuerra, tenant_id: tenantId },
+      where: { nome_guerra: Raw((alias) => `LOWER(${alias}) = LOWER(:nomeGuerra)`, { nomeGuerra: normalizedNomeGuerra }), tenant_id: tenantId },
     });
     if (existingNomeGuerra) {
-      throw new BadRequestException(`O nome de guerra '${dto.nomeGuerra}' já está em uso nesta empresa.`);
+      throw new BadRequestException(`O nome de guerra '${normalizedNomeGuerra}' já está em uso nesta empresa.`);
     }
 
     const passwordHashed = await bcrypt.hash(dto.passwordHash, await bcrypt.genSalt(10));
     const receptionist = this.userRepository.create({
       tenant_id: tenantId,
       name: dto.name,
-      nome_guerra: dto.nomeGuerra,
+      nome_guerra: normalizedNomeGuerra,
       email: dto.email,
       password_hash: passwordHashed,
       role: 'recepcao_level_3',
@@ -187,17 +193,18 @@ export class UsersService {
   }
 
   async registerManager(dto: { token: string; name: string; nomeGuerra: string; email: string; passwordHash: string }) {
+    const normalizedNomeGuerra = this.normalizeNomeGuerra(dto.nomeGuerra);
     const link = await this.linkRepository.findOne({ where: { token: dto.token, valid_until: MoreThan(new Date()), is_used: false } });
     if (!link || link.invited_role !== 'gerencia_level_2') throw new BadRequestException('O convite de Gerente é inválido, expirou ou já foi utilizado.');
     const existingEmail = await this.userRepository.findOne({ where: { email: dto.email } });
     if (existingEmail) throw new BadRequestException('Este e-mail de usuário já está cadastrado.');
-    const existingNomeGuerra = await this.userRepository.findOne({ where: { nome_guerra: dto.nomeGuerra, tenant_id: link.tenant_id } });
-    if (existingNomeGuerra) throw new BadRequestException(`O nome de guerra '${dto.nomeGuerra}' já está em uso nesta empresa.`);
+    const existingNomeGuerra = await this.userRepository.findOne({ where: { nome_guerra: Raw((alias) => `LOWER(${alias}) = LOWER(:nomeGuerra)`, { nomeGuerra: normalizedNomeGuerra }), tenant_id: link.tenant_id } });
+    if (existingNomeGuerra) throw new BadRequestException(`O nome de guerra '${normalizedNomeGuerra}' já está em uso nesta empresa.`);
     const managerEntity: User = this.userRepository.create({
       tenant_id: link.tenant_id,
       manager_id: null,
       name: dto.name,
-      nome_guerra: dto.nomeGuerra,
+      nome_guerra: normalizedNomeGuerra,
       email: dto.email,
       password_hash: await bcrypt.hash(dto.passwordHash, await bcrypt.genSalt(10)),
       role: 'gerencia_level_2',
@@ -212,6 +219,7 @@ export class UsersService {
 
   // 2. Corretor se cadastra sozinho através do link (Rota Pública - Sem Token JWT)
   async registerBroker(dto: RegisterBrokerDto) {
+    const normalizedNomeGuerra = this.normalizeNomeGuerra(dto.nomeGuerra);
     // Valida se o link de onboarding existe e ainda está dentro do prazo
     const link = await this.linkRepository.findOne({
       where: { 
@@ -231,12 +239,12 @@ export class UsersService {
 // Validação de unicidade do Nome de Guerra RESTRITA a esta construtora
     const existingNomeGuerra = await this.userRepository.findOne({
       where: { 
-        nome_guerra: dto.nomeGuerra, 
-        tenant_id: link.tenant_id // <-- Filtro adicionado para garantir unicidade apenas nesta empresa!
+        nome_guerra: Raw((alias) => `LOWER(${alias}) = LOWER(:nomeGuerra)`, { nomeGuerra: normalizedNomeGuerra }),
+        tenant_id: link.tenant_id
       },
     });
     if (existingNomeGuerra) {
-      throw new BadRequestException(`O nome de guerra '${dto.nomeGuerra}' já está em uso por outro corretor.`);
+      throw new BadRequestException(`O nome de guerra '${normalizedNomeGuerra}' já está em uso por outro corretor.`);
     }
 
     // Validação de e-mail único
@@ -254,7 +262,7 @@ export class UsersService {
       tenant_id: link.tenant_id,
         manager_id: link.manager_id,
       name: dto.name,
-      nome_guerra: dto.nomeGuerra,
+      nome_guerra: normalizedNomeGuerra,
       email: dto.email,
       password_hash: passwordHashed,
       creci: dto.creci,

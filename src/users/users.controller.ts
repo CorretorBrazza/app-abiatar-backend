@@ -99,6 +99,9 @@ export class UsersController {
     @CurrentUser() currentUser: { sub: string; role: string },
     @TenantId() tenantId: string,
   ) {
+    if (currentUser.role === 'diretoria_level_1' || currentUser.role === 'platform_admin_level_0') {
+      return this.usersService.findPendingApprovals(null, tenantId);
+    }
     const effectiveManagerId = this.resolveManagerId(managerId, currentUser);
     return this.usersService.findPendingApprovals(effectiveManagerId, tenantId);
   }
@@ -109,12 +112,13 @@ export class UsersController {
   async approveBroker(
     @Param('id') brokerId: string,
     @Body() approveBrokerDto: ApproveBrokerDto,
-    @CurrentUser('sub') managerId: string,
     @CurrentUser() currentUser: { sub: string; role: string },
     @TenantId() tenantId: string,
   ) {
-    this.resolveManagerId(managerId, currentUser);
-    return this.usersService.approveBroker(brokerId, approveBrokerDto, managerId, tenantId);
+    if (!['diretoria_level_1', 'gerencia_level_2', 'platform_admin_level_0'].includes(currentUser.role)) {
+      throw new ForbiddenException('Apenas a Diretoria ou a Gerência podem aprovar Corretores.');
+    }
+    return this.usersService.approveBroker(brokerId, approveBrokerDto, currentUser, tenantId);
   }
 
   // 5. Gerente lista seu time ativo e em carência (ROTA PROTEGIDA) [10]

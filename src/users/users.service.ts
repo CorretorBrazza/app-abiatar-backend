@@ -280,25 +280,32 @@ export class UsersService {
   }
 
   // 3. Gerente lista os corretores pendentes de aprovação da sua equipe
-  async findPendingApprovals(managerId: string, tenantId: string): Promise<User[]> {
+  async findPendingApprovals(managerId: string | null, tenantId: string): Promise<User[]> {
     return this.userRepository.find({
-      where: { 
-        manager_id: managerId, 
-        tenant_id: tenantId, 
-        status: 'inactive' 
-      },
+      where: managerId
+        ? { manager_id: managerId, tenant_id: tenantId, status: 'inactive' }
+        : { tenant_id: tenantId, role: 'corretor_level_3', status: 'inactive' },
       order: { name: 'ASC' },
     });
   }
 
   // 4. Gerente aprova o corretor e define a faixa de carência (7, 15 ou 30 dias)
-  async approveBroker(brokerId: string, dto: ApproveBrokerDto, managerId: string, tenantId: string) {
+  async approveBroker(
+    brokerId: string,
+    dto: ApproveBrokerDto,
+    approver: { sub: string; role: string },
+    tenantId: string,
+  ) {
     const broker = await this.userRepository.findOne({
-      where: { id: brokerId, manager_id: managerId, tenant_id: tenantId },
+      where: approver.role === 'gerencia_level_2'
+        ? { id: brokerId, manager_id: approver.sub, tenant_id: tenantId }
+        : { id: brokerId, tenant_id: tenantId, role: 'corretor_level_3' },
     });
 
     if (!broker) {
-      throw new NotFoundException('Corretor não encontrado ou não pertence à sua gerência.');
+      throw new NotFoundException(approver.role === 'gerencia_level_2'
+        ? 'Corretor não encontrado ou não pertence à sua gerência.'
+        : 'Corretor não encontrado neste tenant.');
     }
 
     if (broker.status !== 'inactive') {
@@ -319,7 +326,7 @@ export class UsersService {
       tenantId,
       'Cadastro aprovado',
       `Seu cadastro foi aprovado. Sua carência termina em ${carenciaExpiration.toLocaleDateString('pt-BR')}.`,
-      { type: 'broker_approved', brokerId: broker.id, carenciaDays: dto.carenciaDays },
+      { type: 'broker_approved', brokerId: broker.id, carenciaDays: dto.carenciaDays, approvedBy: approver.sub, approvedByRole: approver.role },
     );
 
     return {

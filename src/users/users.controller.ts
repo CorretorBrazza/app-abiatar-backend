@@ -51,7 +51,7 @@ export class UsersController {
     @TenantId() tenantId: string,
   ) {
     if (currentUser.role !== 'diretoria_level_1') {
-      throw new ForbiddenException('Apenas a Diretoria pode criar recepcionistas.');
+      throw new ForbiddenException('Apenas a Diretoria pode criar Recepção.');
     }
     return this.usersService.createReceptionist(createReceptionistDto, tenantId);
   }
@@ -75,7 +75,7 @@ export class UsersController {
     @TenantId() tenantId: string,
   ) {
     if (currentUser.role !== 'diretoria_level_1') {
-      throw new ForbiddenException('Somente a Diretoria pode consultar os cards de Gerentes e Recepcionistas.');
+      throw new ForbiddenException('Somente a Diretoria pode consultar os cards de Gerentes e Recepção.');
     }
     if (!['gerencia_level_2', 'recepcao_level_3'].includes(role)) {
       throw new ForbiddenException('Perfil de gestão inválido.');

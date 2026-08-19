@@ -270,7 +270,7 @@ export class BoothsService {
       where: { id: receptionistId, tenant_id: tenantId, role: 'recepcao_level_3' },
     });
     if (!receptionist) {
-      throw new NotFoundException('Recepcionista não encontrada neste tenant.');
+      throw new NotFoundException('Recepção não encontrada neste tenant.');
     }
 
     const existing = await this.receptionistRepository.findOne({

@@ -123,7 +123,7 @@ export class UsersService {
     });
 
     return {
-      message: 'Recepcionista cadastrada com sucesso!',
+      message: 'Recepção cadastrada com sucesso!',
       user: {
         id: savedReceptionist.id,
         name: savedReceptionist.name,

@@ -45,7 +45,7 @@ export class BoothsController {
     @TenantId() tenantId: string,
   ) {
     if (currentUser.role !== 'diretoria_level_1') {
-      throw new ForbiddenException('Somente a Diretoria pode atribuir recepcionistas a plantões.');
+      throw new ForbiddenException('Somente a Diretoria pode atribuir Recepção a plantões.');
     }
     return this.boothsService.assignReceptionist(boothId, receptionistId, tenantId);
   }
@@ -66,7 +66,7 @@ export class BoothsController {
     @TenantId() tenantId: string,
   ) {
     if (currentUser.role !== 'diretoria_level_1') {
-      throw new ForbiddenException('Somente a Diretoria pode remover recepcionistas de plantões.');
+      throw new ForbiddenException('Somente a Diretoria pode remover Recepção de plantões.');
     }
     return this.boothsService.removeReceptionist(boothId, receptionistId, tenantId);
   }

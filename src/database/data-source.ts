@@ -21,6 +21,7 @@ import { AddBoothLifecycle1787000003000 } from './migrations/1787000003000-AddBo
 import { GeneralizeOnboardingLinks1787000004000 } from './migrations/1787000004000-GeneralizeOnboardingLinks';
 import { ConfigurePresenceConfirmationWindow1787000005000 } from './migrations/1787000005000-ConfigurePresenceConfirmationWindow';
 import { AddBrokerManagementState1787000006000 } from './migrations/1787000006000-AddBrokerManagementState';
+import { CleanupAbiatarTestUsers1787000007000 } from './migrations/1787000007000-CleanupAbiatarTestUsers';
 
 export const AppDataSource = new DataSource({
   type: 'postgres',
@@ -40,7 +41,7 @@ export const AppDataSource = new DataSource({
     PushDeviceToken,
     AuditLog,
   ],
-  migrations: [CreateAuditLogs1787000000000, AddReceptionAssignments1787000001000, AddBoothRuleSets1787000002000, AddBoothLifecycle1787000003000, GeneralizeOnboardingLinks1787000004000, ConfigurePresenceConfirmationWindow1787000005000, AddBrokerManagementState1787000006000],
+  migrations: [CreateAuditLogs1787000000000, AddReceptionAssignments1787000001000, AddBoothRuleSets1787000002000, AddBoothLifecycle1787000003000, GeneralizeOnboardingLinks1787000004000, ConfigurePresenceConfirmationWindow1787000005000, AddBrokerManagementState1787000006000, CleanupAbiatarTestUsers1787000007000],
   migrationsRun: false,
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
 });

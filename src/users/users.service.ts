@@ -15,6 +15,7 @@ import { ApproveBrokerDto } from './dto/approve-broker.dto';
 import { TransferBrokerDto, UpdateBrokerLeadPauseDto, UpdateBrokerProfileDto } from './dto/update-broker-profile.dto';
 import { NotificationsService } from '../notifications/notifications.service';
 import { AuditService } from '../audit/audit.service';
+import { RealtimeService } from '../realtime/realtime.service';
 
 @Injectable()
 export class UsersService {
@@ -26,6 +27,7 @@ export class UsersService {
     private linkRepository: Repository<OnboardingLink>,
     private notificationsService: NotificationsService,
     private auditService: AuditService,
+    private readonly realtimeService: RealtimeService,
   ) {}
 
   private normalizeNomeGuerra(value: string): string {
@@ -58,6 +60,7 @@ export class UsersService {
       status: 'active',
     });
     const savedManager = await this.userRepository.save(manager);
+    this.realtimeService.publish({ eventType: 'manager.created', tenantId, aggregateId: savedManager.id, payload: { userId: savedManager.id, role: savedManager.role, name: savedManager.name } });
     void this.auditService.record({ tenantId }, {
       action: 'USER_CREATED',
       entityType: 'USER',
@@ -109,6 +112,7 @@ export class UsersService {
       must_change_password: true,
     });
     const savedReceptionist = await this.userRepository.save(receptionist);
+    this.realtimeService.publish({ eventType: 'reception.created', tenantId, aggregateId: savedReceptionist.id, payload: { userId: savedReceptionist.id, role: savedReceptionist.role, name: savedReceptionist.name } });
     void this.auditService.record({ tenantId }, {
       action: 'USER_CREATED',
       entityType: 'USER',
@@ -376,6 +380,7 @@ export class UsersService {
     }
 
     await this.userRepository.save(broker);
+    this.realtimeService.publish({ eventType: 'broker.approved', tenantId, aggregateId: broker.id, payload: { brokerId: broker.id, managerId: broker.manager_id, status: broker.status, carenciaEndsAt: broker.carencia_ends_at } });
     const approvalMessage = dto.carenciaDays === 0
       ? 'Seu cadastro foi aprovado sem carência. Você poderá atuar conforme as regras de presença e elegibilidade.'
       : `Seu cadastro foi aprovado. Sua carência termina em ${carenciaExpiration.toLocaleDateString('pt-BR')}.`;

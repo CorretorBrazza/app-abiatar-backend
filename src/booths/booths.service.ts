@@ -207,8 +207,9 @@ export class BoothsService {
         ping_response_deadline_minutes: 5,
         weekend_enabled: true,
         minimum_monthly_periods: 20,
+        periods: [],
         created_by: null,
-      } as BoothRuleSet;
+      } as unknown as BoothRuleSet;
     }
   }
 
@@ -243,6 +244,7 @@ export class BoothsService {
       gps_radius_meters: dto.gpsRadiusMeters ?? current.gps_radius_meters,
       weekend_enabled: dto.weekendEnabled ?? current.weekend_enabled,
       minimum_monthly_periods: dto.minimumMonthlyPeriods ?? current.minimum_monthly_periods,
+      periods: dto.periods ?? current.periods ?? [],
     });
     await this.ruleSetRepository.update({ booth_id: boothId, tenant_id: tenantId, is_active: true }, { is_active: false });
     const saved = await this.ruleSetRepository.save(nextVersion);

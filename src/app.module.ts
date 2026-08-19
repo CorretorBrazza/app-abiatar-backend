@@ -27,6 +27,7 @@ import { AuditLog } from './audit/entities/audit-log.entity';
 import { AuditModule } from './audit/audit.module';
 import { DevSecurityLogger } from './security/dev-security.logger';
 import { DevRequestLoggingMiddleware } from './security/dev-request-logging.middleware';
+import { RealtimeModule } from './realtime/realtime.module';
 
 @Module({
   controllers: [AppController],
@@ -61,6 +62,7 @@ import { DevRequestLoggingMiddleware } from './security/dev-request-logging.midd
     MessagesModule,
     NotificationsModule, // <-- ADICIONE ESTA LINHA AO ARRAY
     AuditModule,
+    RealtimeModule,
   ],
 })
 export class AppModule implements NestModule {

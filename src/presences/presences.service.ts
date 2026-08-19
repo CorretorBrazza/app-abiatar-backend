@@ -13,6 +13,7 @@ import { PingResponseDto } from './dto/ping-response.dto';
 import { Message } from '../messages/entities/message.entity'; // <-- ADICIONE ESTA LINHA
 import { MessageRecipient } from '../messages/entities/message-recipient.entity';
 import { NotificationsService } from '../notifications/notifications.service';
+import { RealtimeService } from '../realtime/realtime.service';
 
 @Injectable()
 export class PresencesService {
@@ -35,6 +36,7 @@ export class PresencesService {
     @InjectRepository(MessageRecipient)
     private recipientRepository: Repository<MessageRecipient>,
     private notificationsService: NotificationsService,
+    private readonly realtimeService: RealtimeService,
   ) {}
 
   // 1. Algoritmo Privado de Haversine (Cálculo de Distância Geográfica)
@@ -156,6 +158,7 @@ export class PresencesService {
     });
 
     const savedPresence = await this.presenceRepository.save(presence);
+    this.realtimeService.publish({ eventType: 'presence.checked_in', tenantId, aggregateId: savedPresence.id, payload: { brokerId, boothId: dto.boothId, status: savedPresence.status, nextConfirmationAt: savedPresence.next_confirmation_at } });
 
     return {
       message: 'Check-in realizado com sucesso! Presença confirmada.',
@@ -219,6 +222,7 @@ export class PresencesService {
     activePresence.status = elapsedMinutes >= activePresence.minimum_period_minutes ? 'completed' : 'invalidated';
 
     const savedPresence = await this.presenceRepository.save(activePresence);
+    this.realtimeService.publish({ eventType: 'presence.checked_out', tenantId, aggregateId: savedPresence.id, payload: { brokerId, boothId: savedPresence.booth_id, status: savedPresence.status, accumulatedMinutes: savedPresence.accumulated_minutes } });
 
     // DISPARA O ALERTA PREDITIVO DE COBERTURA BAIXA NA SAÍDA DO CORRETOR [6]
     await this.checkAndNotifyLowCoverage(activePresence.booth_id, tenantId);
@@ -376,6 +380,7 @@ export class PresencesService {
       ping.presence.last_confirmed_at = new Date();
       ping.presence.next_confirmation_at = this.getNextAlignedConfirmationAt(new Date());
       await this.presenceRepository.save(ping.presence);
+      this.realtimeService.publish({ eventType: 'presence.confirmed', tenantId, aggregateId: ping.presence.id, payload: { brokerId, boothId: ping.presence.booth_id, method: methodUsed, nextConfirmationAt: ping.presence.next_confirmation_at } });
 
       return {
         message: 'Presença confirmada com sucesso!',
@@ -440,6 +445,7 @@ export class PresencesService {
 
           presence.status = 'absent'; // Presença suspensa [8]
           await this.presenceRepository.save(presence);
+          this.realtimeService.publish({ eventType: 'presence.absent', tenantId: presence.tenant_id, aggregateId: presence.id, payload: { brokerId: presence.broker_id, boothId: presence.booth_id, reason: 'no_response' } });
           brokersSuspended++;
           console.log(`[CRON] Presença ${presence.id} suspensa por falta de resposta.`);
           void this.notificationsService.sendToUser(

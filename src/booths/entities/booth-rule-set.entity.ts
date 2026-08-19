@@ -78,6 +78,18 @@ export class BoothRuleSet {
   @Column({ type: 'int', default: 20 })
   minimum_monthly_periods: number;
 
+  @Column({ type: 'jsonb', default: () => "'[]'::jsonb" })
+  periods: Array<{
+    id: string;
+    name: string;
+    openingTime: string;
+    closingTime: string;
+    minimumMinutes: number;
+    checkinToleranceMinutes: number;
+    checkoutToleranceMinutes: number;
+    enabled?: boolean;
+  }>;
+
   @Column({ type: 'uuid', nullable: true })
   created_by: string | null;
 

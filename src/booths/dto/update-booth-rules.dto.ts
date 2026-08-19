@@ -1,4 +1,6 @@
-import { IsBoolean, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsArray, IsBoolean, IsInt, IsOptional, IsString, Max, Min, ValidateNested } from 'class-validator';
+import { Type } from 'class-transformer';
+import { BoothPeriodDto } from './booth-period.dto';
 
 export class UpdateBoothRulesDto {
   @IsInt() @Min(1) @Max(1440) @IsOptional()
@@ -42,6 +44,12 @@ export class UpdateBoothRulesDto {
 
   @IsInt() @Min(0) @Max(1000) @IsOptional()
   minimumMonthlyPeriods?: number;
+
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => BoothPeriodDto)
+  @IsOptional()
+  periods?: BoothPeriodDto[];
 
   @IsString() @IsOptional()
   reason?: string;

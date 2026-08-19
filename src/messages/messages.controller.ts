@@ -13,8 +13,11 @@ export class MessagesController {
 
   // 1. Envia um novo comunicado (Diretoria ou Gerência) - CHAMA DIRETAMENTE O SERVIÇO AGORA [12]
   @Get('recipients')
-  async listRecipients(@TenantId() tenantId: string) {
-    return this.messagesService.listRecipients(tenantId);
+  async listRecipients(
+    @TenantId() tenantId: string,
+    @CurrentUser() currentUser: { sub: string; role: string },
+  ) {
+    return this.messagesService.listRecipients(tenantId, { id: currentUser.sub, role: currentUser.role });
   }
 
   @Post()

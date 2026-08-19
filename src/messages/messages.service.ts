@@ -23,9 +23,12 @@ export class MessagesService {
     private notificationsService: NotificationsService,
   ) {}
 
-  async listRecipients(tenantId: string) {
+  async listRecipients(tenantId: string, actor: { id: string; role: string }) {
+    const where = actor.role === 'gerencia_level_2'
+      ? { tenant_id: tenantId, status: 'active', role: 'corretor_level_3', manager_id: actor.id }
+      : { tenant_id: tenantId, status: 'active' };
     return this.userRepository.find({
-      where: { tenant_id: tenantId, status: 'active' },
+      where,
       select: { id: true, name: true, nome_guerra: true, email: true, role: true, manager_id: true },
       order: { role: 'ASC', nome_guerra: 'ASC' },
     });
@@ -33,8 +36,8 @@ export class MessagesService {
 
   // 1. Envia um comunicado oficial roteando os destinatários de forma dinâmica por escopo [12]
   async createMessage(dto: CreateMessageDto, sender: { id: string; role: string }, tenantId: string) {
-    if (!['diretoria_level_1', 'platform_admin_level_0'].includes(sender.role)) {
-      throw new ForbiddenException('Somente a Diretoria pode enviar comunicados institucionais.');
+    if (!['diretoria_level_1', 'gerencia_level_2', 'platform_admin_level_0'].includes(sender.role)) {
+      throw new ForbiddenException('Somente a Diretoria ou a Gerência podem enviar comunicados.');
     }
     const senderId = sender.id;
     // A. Cria e salva o registro master da Mensagem
@@ -49,6 +52,10 @@ export class MessagesService {
     const savedMessage = await this.messageRepository.save(message);
 
     let recipientUsers: User[] = [];
+
+    if (sender.role === 'gerencia_level_2' && !['individual', 'specific_team'].includes(dto.scope)) {
+      throw new ForbiddenException('A Gerência só pode enviar mensagens para Corretores da própria equipe.');
+    }
 
     // B. MOTOR DE ROTEAMENTO: Identifica os destinatários pelo Escopo do DTO [12]
     if (dto.scope === 'all_users') {
@@ -69,18 +76,25 @@ export class MessagesService {
       if (!dto.targetManagerId) {
         throw new BadRequestException('Para enviar a uma equipe específica, o ID do gerente é obrigatório.');
       }
+      if (sender.role === 'gerencia_level_2' && dto.targetManagerId !== sender.id) {
+        throw new ForbiddenException('A Gerência só pode comunicar a própria equipe.');
+      }
       recipientUsers = await this.userRepository.find({
-        where: [
-          { id: dto.targetManagerId, tenant_id: tenantId },
-          { manager_id: dto.targetManagerId, tenant_id: tenantId }
-        ],
+        where: sender.role === 'gerencia_level_2'
+          ? { manager_id: sender.id, tenant_id: tenantId, role: 'corretor_level_3', status: 'active' }
+          : [
+              { id: dto.targetManagerId, tenant_id: tenantId },
+              { manager_id: dto.targetManagerId, tenant_id: tenantId }
+            ],
       });
     } else if (dto.scope === 'individual') {
       if (!dto.individualRecipientIds || dto.individualRecipientIds.length === 0) {
         throw new BadRequestException('Para envios individuais, pelo menos um ID de destinatário é obrigatório.');
       }
       recipientUsers = await this.userRepository.find({
-        where: { id: In(dto.individualRecipientIds), tenant_id: tenantId },
+        where: sender.role === 'gerencia_level_2'
+          ? { id: In(dto.individualRecipientIds), tenant_id: tenantId, role: 'corretor_level_3', manager_id: sender.id, status: 'active' }
+          : { id: In(dto.individualRecipientIds), tenant_id: tenantId, status: 'active' },
       });
     }
 

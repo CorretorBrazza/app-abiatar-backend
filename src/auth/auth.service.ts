@@ -1,9 +1,10 @@
 // src/auth/auth.service.ts
-import { Injectable, UnauthorizedException, BadRequestException } from '@nestjs/common';
+import { Injectable, UnauthorizedException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcryptjs';
+import * as crypto from 'crypto';
 
 import { Tenant } from '../tenants/tenant.entity';
 import { User } from '../users/user.entity';
@@ -69,6 +70,56 @@ export class AuthService {
     };
   }
 
+  async changePassword(userId: string, currentPassword: string, newPassword: string) {
+    const user = await this.userRepository.findOne({ where: { id: userId } });
+    if (!user) throw new UnauthorizedException('Usuário não encontrado.');
+
+    const valid = await bcrypt.compare(currentPassword, user.password_hash);
+    if (!valid) throw new BadRequestException('A senha atual está incorreta.');
+    if (currentPassword === newPassword) throw new BadRequestException('A nova senha deve ser diferente da senha atual.');
+    if (newPassword === '12345678') throw new BadRequestException('Escolha uma senha diferente da senha temporária padrão.');
+
+    user.password_hash = await bcrypt.hash(newPassword, await bcrypt.genSalt(10));
+    user.must_change_password = false;
+    user.password_reset_expires_at = null;
+    user.session_version = (user.session_version || 0) + 1;
+    await this.userRepository.save(user);
+
+    void this.auditService.record({ tenantId: user.tenant_id, actorUserId: user.id, actorRole: user.role, actorEmail: user.email }, {
+      action: 'PASSWORD_CHANGED', entityType: 'USER', entityId: user.id, reason: 'Senha alterada pelo próprio usuário',
+    });
+    return { message: 'Senha alterada com sucesso. Faça login novamente.' };
+  }
+
+  async resetPassword(actor: { id: string; role: string; email?: string }, targetUserId: string, tenantId: string, reason?: string) {
+    const target = await this.userRepository.findOne({ where: { id: targetUserId, tenant_id: tenantId } });
+    if (!target) throw new BadRequestException('Usuário não encontrado neste tenant.');
+    if (target.id === actor.id) throw new BadRequestException('Para alterar sua própria senha, utilize a opção Alterar senha.');
+    if (actor.role === 'gerencia_level_2' && (target.role !== 'corretor_level_3' || target.manager_id !== actor.id)) {
+      throw new ForbiddenException('A Gerência só pode redefinir senhas de Corretores da própria equipe.');
+    }
+    if (!['diretoria_level_1', 'gerencia_level_2', 'platform_admin_level_0'].includes(actor.role)) {
+      throw new ForbiddenException('Seu perfil não pode redefinir senhas.');
+    }
+
+    const temporaryPassword = crypto.randomBytes(9).toString('base64url').slice(0, 12);
+    target.password_hash = await bcrypt.hash(temporaryPassword, await bcrypt.genSalt(10));
+    target.must_change_password = true;
+    const expires = new Date();
+    expires.setMinutes(expires.getMinutes() + 30);
+    target.password_reset_expires_at = expires;
+    target.session_version = (target.session_version || 0) + 1;
+    await this.userRepository.save(target);
+
+    void this.auditService.record({ tenantId, actorUserId: actor.id, actorRole: actor.role, actorEmail: actor.email }, {
+      action: 'PASSWORD_RESET_REQUESTED', entityType: 'USER', entityId: target.id,
+      reason: reason || 'Redefinição administrativa de senha',
+      afterData: { targetEmail: target.email, expiresAt: expires.toISOString() },
+    });
+
+    return { message: 'Senha temporária criada. Ela expira em 30 minutos e exigirá troca no próximo acesso.', temporaryPassword, expiresAt: expires.toISOString() };
+  }
+
   // 2. Realiza o login, valida a senha e assina o token seguro JWT
   async login(dto: LoginDto) {
     // Busca o usuário pelo e-mail. O tenant é carregado explicitamente abaixo
@@ -124,11 +175,17 @@ export class AuthService {
       throw new UnauthorizedException('E-mail ou senha incorretos.');
     }
 
+    if (user.must_change_password && user.password_reset_expires_at && user.password_reset_expires_at < new Date()) {
+      throw new UnauthorizedException('A senha temporária expirou. Solicite uma nova redefinição à gestão.');
+    }
+
     // Define o conteúdo (payload) do token
-    const payload = { 
-      sub: user.id, 
-      tenant_id: user.tenant_id, 
-      role: user.role 
+    const payload = {
+      sub: user.id,
+      tenant_id: user.tenant_id,
+      role: user.role,
+      session_version: user.session_version || 0,
+      must_change_password: !!user.must_change_password,
     };
 
     // Assina o token seguro
@@ -154,6 +211,7 @@ export class AuthService {
         name: user.name,
         nome_guerra: user.nome_guerra,
         role: user.role,
+        must_change_password: !!user.must_change_password,
       },
       tenant: {
         id: tenant.id,

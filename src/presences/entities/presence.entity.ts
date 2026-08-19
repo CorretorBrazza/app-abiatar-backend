@@ -56,6 +56,12 @@ export class Presence {
   @Column({ type: 'timestamp', nullable: true })
   check_out_at: Date;
 
+  @Column({ type: 'timestamp', nullable: true })
+  last_confirmed_at: Date | null;
+
+  @Column({ type: 'timestamp', nullable: true })
+  next_confirmation_at: Date | null;
+
   @Column({ default: 0 })
   accumulated_minutes: number; // Minutos validados acumulados neste turno
 

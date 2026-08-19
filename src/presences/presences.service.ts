@@ -54,6 +54,19 @@ export class PresencesService {
     return distance;
   }
 
+  private getNextAlignedConfirmationAt(from: Date): Date {
+    const next = new Date(from);
+    const minute = next.getMinutes();
+    if (minute < 25) next.setMinutes(25, 0, 0);
+    else if (minute < 50) next.setMinutes(50, 0, 0);
+    else { next.setHours(next.getHours() + 1); next.setMinutes(0, 0, 0); }
+    return next;
+  }
+
+  private getConfirmationToleranceMinutes(ruleSet: BoothRuleSet): number {
+    return Math.max(0, Math.min(5, Number(ruleSet.ping_response_deadline_minutes ?? 5)));
+  }
+
   // 2. Realiza o Check-in com validação por Dupla Camada (GPS ou Wi-Fi)
   async checkIn(dto: CheckInDto, brokerId: string, tenantId: string) {
 
@@ -137,6 +150,8 @@ export class PresencesService {
       period_weight: ruleSet.period_weight,
       minimum_monthly_periods: ruleSet.minimum_monthly_periods,
       check_in_at: new Date(),
+      last_confirmed_at: new Date(),
+      next_confirmation_at: this.getNextAlignedConfirmationAt(new Date()),
       status: 'online',
     });
 
@@ -175,7 +190,7 @@ export class PresencesService {
       closing_time: null,
       checkin_tolerance_minutes: 0,
       checkout_tolerance_minutes: 0,
-      ping_interval_minutes: 30,
+      ping_interval_minutes: 25,
       ping_response_deadline_minutes: 5,
       minimum_brokers_required: booth.min_brokers_required,
       gps_radius_meters: booth.gps_radius,
@@ -214,7 +229,8 @@ export class PresencesService {
         : `Check-out realizado. O período foi invalidado por não atingir o mínimo de ${activePresence.minimum_period_minutes} minutos.`,
       presenceId: savedPresence.id,
       checkInAt: savedPresence.check_in_at,
-      checkOutAt: savedPresence.check_out_at,
+        checkOutAt: savedPresence.check_out_at,
+        nextConfirmationAt: null,
       totalMinutes: savedPresence.accumulated_minutes,
     };
   }
@@ -251,6 +267,9 @@ export class PresencesService {
             activeMinutes,
             minimumMinutes,
             minimumReached: activeMinutes >= minimumMinutes,
+            lastConfirmedAt: activePresence.last_confirmed_at,
+            nextConfirmationAt: activePresence.next_confirmation_at,
+            confirmationToleranceMinutes: activeRuleSet ? this.getConfirmationToleranceMinutes(activeRuleSet) : 5,
           }
         : null,
     };
@@ -284,7 +303,10 @@ export class PresencesService {
         boothName: activePresence.booth.name,
         checkInAt: activePresence.check_in_at,
         status: activePresence.status,
-        pendingPingId: pendingPing ? pendingPing.id : null, // <-- RETORNA O ID DO PING SE EXISTIR! [8]
+        pendingPingId: pendingPing ? pendingPing.id : null,
+        lastConfirmedAt: activePresence.last_confirmed_at,
+        nextConfirmationAt: activePresence.next_confirmation_at,
+        confirmationToleranceMinutes: 5,
       },
     };
   }
@@ -351,6 +373,8 @@ export class PresencesService {
       await this.logRepository.save(ping);
 
       ping.presence.status = 'online';
+      ping.presence.last_confirmed_at = new Date();
+      ping.presence.next_confirmation_at = this.getNextAlignedConfirmationAt(new Date());
       await this.presenceRepository.save(ping.presence);
 
       return {
@@ -396,8 +420,8 @@ export class PresencesService {
       });
       if (!booth) continue;
       const ruleSet = await this.getRuleSetForBooth(booth);
-      const pingIntervalMinutes = Math.max(1, Number(ruleSet.ping_interval_minutes || 30));
-      const responseDeadlineMinutes = Math.max(1, Number(ruleSet.ping_response_deadline_minutes || 30));
+      const pingIntervalMinutes = 25;
+      const responseDeadlineMinutes = this.getConfirmationToleranceMinutes(ruleSet);
 
       // Busca se já existe um ping "pendente" lançado anteriormente para essa presença
       const pendingPing = await this.logRepository.findOne({
@@ -431,12 +455,10 @@ export class PresencesService {
           where: { presence_id: presence.id },
           order: { sent_at: 'DESC' },
         });
-        const minutesSinceLastPing = lastPing
-          ? Math.floor((now.getTime() - lastPing.sent_at.getTime()) / 1000 / 60)
-          : pingIntervalMinutes;
-        if (lastPing && minutesSinceLastPing < pingIntervalMinutes) continue;
+        const scheduledAt = presence.next_confirmation_at || (lastPing ? this.getNextAlignedConfirmationAt(lastPing.sent_at) : this.getNextAlignedConfirmationAt(presence.check_in_at));
+        if (now.getTime() < scheduledAt.getTime()) continue;
 
-        // Sem ping pendente e após o intervalo configurado, dispara nova confirmação.
+        // Sem ping pendente e após o próximo marco alinhado, dispara nova confirmação.
         const newPing = this.logRepository.create({
           tenant_id: presence.tenant_id,
           presence_id: presence.id,

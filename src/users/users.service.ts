@@ -311,6 +311,7 @@ export class UsersService {
     user.leads_pause_reason = reason.trim();
     user.removed_at = new Date();
     user.removed_by = actor.sub;
+    user.session_version = (user.session_version || 0) + 1;
     const saved = await this.userRepository.save(user);
     void this.auditService.record({ tenantId, actorUserId: actor.sub, actorRole: actor.role }, {
       action: 'USER_REMOVED', entityType: 'USER', entityId: saved.id, beforeData: before,
@@ -497,6 +498,7 @@ export class UsersService {
     broker.leads_pause_reason = reason.trim();
     broker.removed_at = new Date();
     broker.removed_by = actor.sub;
+    broker.session_version = (broker.session_version || 0) + 1;
     const saved = await this.userRepository.save(broker);
     void this.auditService.record({ tenantId, actorUserId: actor.sub, actorRole: actor.role }, {
       action: 'BROKER_REMOVED', entityType: 'USER', entityId: saved.id,

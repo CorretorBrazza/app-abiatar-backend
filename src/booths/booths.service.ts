@@ -1,7 +1,7 @@
 // src/booths/booths.service.ts
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, IsNull } from 'typeorm';
 import { Booth } from './entities/booth.entity';
 import { BoothWifi } from './entities/booth-wifi.entity';
 import { BoothReceptionist } from './entities/booth-receptionist.entity';
@@ -269,7 +269,7 @@ export class BoothsService {
   ): Promise<BoothReceptionist> {
     await this.findOne(boothId, tenantId);
     const receptionist = await this.userRepository.findOne({
-      where: { id: receptionistId, tenant_id: tenantId, role: 'recepcao_level_3' },
+      where: { id: receptionistId, tenant_id: tenantId, role: 'recepcao_level_3', status: 'active', removed_at: IsNull() },
     });
     if (!receptionist) {
       throw new NotFoundException('Recepção não encontrada neste tenant.');
@@ -292,6 +292,8 @@ export class BoothsService {
   }
 
   async listAssignedToReceptionist(receptionistId: string, tenantId: string) {
+    const receptionist = await this.userRepository.findOne({ where: { id: receptionistId, tenant_id: tenantId, role: 'recepcao_level_3', status: 'active', removed_at: IsNull() } });
+    if (!receptionist) return [];
     const assignments = await this.receptionistRepository.find({
       where: { receptionist_id: receptionistId, tenant_id: tenantId, is_active: true },
     });
@@ -320,7 +322,7 @@ export class BoothsService {
       order: { created_at: 'ASC' },
     });
     const users = await this.userRepository.find({
-      where: { tenant_id: tenantId, role: 'recepcao_level_3' },
+      where: { tenant_id: tenantId, role: 'recepcao_level_3', status: 'active', removed_at: IsNull() },
     });
     const byId = new Map(users.map((user) => [user.id, user]));
     return assignments.map((assignment) => ({

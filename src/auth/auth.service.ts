@@ -120,6 +120,14 @@ export class AuthService {
     return { message: 'Senha temporária criada. Ela expira em 30 minutos e exigirá troca no próximo acesso.', temporaryPassword, expiresAt: expires.toISOString() };
   }
 
+  async validateActiveSession(userId: string, tenantId: string, tokenSessionVersion: number): Promise<User> {
+    const user = await this.userRepository.findOne({ where: { id: userId, tenant_id: tenantId } });
+    if (!user || user.removed_at || user.status === 'inactive' || (user.session_version || 0) !== (tokenSessionVersion || 0)) {
+      throw new UnauthorizedException('Sessão inválida: usuário removido, inativo ou sessão revogada.');
+    }
+    return user;
+  }
+
   // 2. Realiza o login, valida a senha e assina o token seguro JWT
   async login(dto: LoginDto) {
     // Busca o usuário pelo e-mail. O tenant é carregado explicitamente abaixo
@@ -139,12 +147,12 @@ export class AuthService {
       throw new UnauthorizedException('E-mail ou senha incorretos.');
     }
 
-    if (user.role === 'corretor_level_3' && user.status === 'inactive') {
+    if (user.removed_at || user.status === 'inactive') {
       void this.auditService.record({ tenantId: user.tenant_id, actorUserId: user.id, actorRole: user.role, actorEmail: user.email }, {
-        action: 'LOGIN_BLOCKED_PENDING_APPROVAL', entityType: 'AUTHENTICATION', entityId: user.id, success: false,
-        reason: 'Corretor ainda aguarda aprovação da Gerência',
+        action: user.removed_at ? 'LOGIN_BLOCKED_REMOVED_USER' : 'LOGIN_BLOCKED_INACTIVE_USER', entityType: 'AUTHENTICATION', entityId: user.id, success: false,
+        reason: user.removed_at ? 'Usuário removido pela gestão' : 'Usuário inativo ou aguardando aprovação',
       });
-      throw new UnauthorizedException('Seu cadastro ainda aguarda aprovação da Gerência responsável.');
+      throw new UnauthorizedException(user.removed_at ? 'Este usuário foi removido da operação.' : 'Este usuário está inativo ou ainda aguarda aprovação.');
     }
 
     // Compara a senha enviada com a senha criptografada do banco

@@ -1,12 +1,13 @@
 import { CanActivate, ExecutionContext, Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { AuthService } from '../auth.service';
+import { DataSource } from 'typeorm';
+import { User } from '../../users/user.entity';
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
   constructor(
     private readonly jwtService: JwtService,
-    private readonly authService: AuthService,
+    private readonly dataSource: DataSource,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -19,11 +20,12 @@ export class JwtAuthGuard implements CanActivate {
     const token = authHeader.split(' ')[1];
     try {
       const payload = await this.jwtService.verifyAsync(token, { secret: process.env.JWT_SECRET });
-      const user = await this.authService.validateActiveSession(
-        payload.sub,
-        payload.tenant_id,
-        payload.session_version || 0,
-      );
+      const user = await this.dataSource.getRepository(User).findOne({
+        where: { id: payload.sub, tenant_id: payload.tenant_id },
+      });
+      if (!user || user.removed_at || user.status === 'inactive' || (user.session_version || 0) !== (payload.session_version || 0)) {
+        throw new UnauthorizedException('Sessão inválida: usuário removido, inativo ou sessão revogada.');
+      }
       request.user = {
         ...payload,
         role: user.role,

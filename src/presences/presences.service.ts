@@ -97,10 +97,12 @@ export class PresencesService {
 
     const ruleSet = await this.getRuleSetForBooth(booth);
     const eligibility = await this.checkWeekendEligibility(brokerId, tenantId, ruleSet);
-    if (!eligibility.eligible) {
+    if (!eligibility.checkInAllowedToday) {
       const dayName = new Date().getDay() === 6 ? 'Sábado' : 'Domingo';
       throw new BadRequestException(
-        `Check-in bloqueado para este ${dayName}. Para trabalhar no fim de semana, é necessário acumular no mínimo ${eligibility.required} períodos de Segunda a Sexta. Você acumulou apenas ${eligibility.accumulated} períodos nesta semana.`,
+        eligibility.enabled === false
+          ? 'O trabalho de fim de semana não está habilitado para este plantão.'
+          : `Check-in bloqueado para este ${dayName}. Para trabalhar no fim de semana, é necessário acumular no mínimo ${eligibility.required} períodos de Segunda a Sexta. Você acumulou apenas ${eligibility.accumulated} períodos nesta semana.`,
       );
     }
 
@@ -544,30 +546,18 @@ export class PresencesService {
     tenantId: string,
     ruleSet?: BoothRuleSet,
     accumulatedOverride?: number,
-  ): Promise<{ eligible: boolean; accumulated: number; required: number }> {
+    ): Promise<{ eligible: boolean; checkInAllowedToday: boolean; enabled: boolean; accumulated: number; required: number }> {
     const now = new Date();
     const dayOfWeek = now.getDay(); // 0 = Domingo, 6 = Sábado
     const accumulated = accumulatedOverride ?? await this.getAccumulatedPeriodsForCurrentWeek(brokerId, tenantId);
-    
-    // Em dias úteis o check-in é elegível, mas o acumulado real continua sendo devolvido ao dashboard.
-    if (dayOfWeek >= 1 && dayOfWeek <= 5) {
-      return { eligible: true, accumulated, required: 0 };
-    }
-    let required = 0;
-
-    if (dayOfWeek === 6) {
-      required = ruleSet?.saturday_required_periods ?? 5;
-    } else if (dayOfWeek === 0) {
-      required = ruleSet?.sunday_required_periods ?? 6;
-    }
-
-    const eligible = accumulated >= required;
-
-    return {
-      eligible,
-      accumulated,
-      required,
-    };
+    const enabled = ruleSet?.weekend_enabled === true;
+    const saturdayRequired = ruleSet?.saturday_required_periods ?? 5;
+    const sundayRequired = ruleSet?.sunday_required_periods ?? 6;
+    const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+    const required = dayOfWeek === 6 ? saturdayRequired : dayOfWeek === 0 ? sundayRequired : Math.max(saturdayRequired, sundayRequired);
+    const eligible = enabled && accumulated >= required;
+    const checkInAllowedToday = !isWeekend ? true : eligible;
+    return { eligible, checkInAllowedToday, enabled, accumulated, required };
   }
 
   // 10. ALERTA PREDITIVO DE COBERTURA BAIXA: Verifica e notifica o gerente do plantão [6]

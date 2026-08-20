@@ -5,7 +5,7 @@ export class AddWeeklyPeriodReports1787000013000 implements MigrationInterface {
 
   async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`CREATE TABLE IF NOT EXISTS "weekly_period_reports" (
-      "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+      "id" uuid NOT NULL DEFAULT gen_random_uuid(),
       "tenant_id" uuid NOT NULL,
       "week_start" date NOT NULL,
       "week_end" date NOT NULL,
@@ -21,7 +21,7 @@ export class AddWeeklyPeriodReports1787000013000 implements MigrationInterface {
     )`);
     await queryRunner.query(`CREATE INDEX IF NOT EXISTS "IDX_weekly_period_reports_tenant" ON "weekly_period_reports" ("tenant_id", "week_start")`);
     await queryRunner.query(`CREATE TABLE IF NOT EXISTS "weekly_period_report_items" (
-      "id" uuid NOT NULL DEFAULT uuid_generate_v4(),
+      "id" uuid NOT NULL DEFAULT gen_random_uuid(),
       "report_id" uuid NOT NULL,
       "tenant_id" uuid NOT NULL,
       "broker_id" uuid NOT NULL,

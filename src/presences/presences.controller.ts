@@ -1,5 +1,5 @@
 // src/presences/presences.controller.ts
-import { Controller, Post, Get, Body, UseGuards, Param, NotFoundException, Query } from '@nestjs/common';
+import { Controller, Post, Get, Body, UseGuards, Param, NotFoundException, Query, ForbiddenException } from '@nestjs/common';
 import { PresencesService } from './presences.service';
 import { CheckInDto } from './dto/check-in.dto';
 import { PingResponseDto } from './dto/ping-response.dto';
@@ -75,13 +75,18 @@ export class PresencesController {
   @UseGuards(JwtAuthGuard)
   async getBrokerStatistics(
     @Param('brokerId') brokerId: string,
+    @CurrentUser() currentUser: { role: string },
     @TenantId() tenantId: string,
     @Query('month') month?: string,
     @Query('year') year?: string,
+    @Query('boothId') boothId?: string,
   ) {
+    if (!['diretoria_level_1', 'platform_admin_level_0'].includes(currentUser.role)) {
+      throw new ForbiddenException('Somente a Diretoria pode consultar o BI de assiduidade.');
+    }
     const activeMonth = month ? Number(month) : new Date().getMonth() + 1;
     const activeYear = year ? Number(year) : new Date().getFullYear();
-    return this.presencesService.getBrokerMonthlyStatistics(brokerId, tenantId, activeMonth, activeYear);
+    return this.presencesService.getBrokerMonthlyStatistics(brokerId, tenantId, activeMonth, activeYear, boothId);
   }
 
   // 2. Rota de Score de Plantão / Mapa de Calor de Demanda (GET /presences/statistics/booth-demand/:boothId) [6]
@@ -89,8 +94,12 @@ export class PresencesController {
   @UseGuards(JwtAuthGuard)
   async getBoothDemandHeatmap(
     @Param('boothId') boothId: string,
+    @CurrentUser() currentUser: { role: string },
     @TenantId() tenantId: string,
   ) {
+    if (!['diretoria_level_1', 'platform_admin_level_0'].includes(currentUser.role)) {
+      throw new ForbiddenException('Somente a Diretoria pode consultar o BI de demanda.');
+    }
     return this.presencesService.getBoothDemandHeatmap(boothId, tenantId);
   }
 }

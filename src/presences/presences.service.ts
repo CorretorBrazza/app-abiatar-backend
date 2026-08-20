@@ -609,7 +609,7 @@ export class PresencesService {
   }
 
   // 11. Relatório mensal de % de presença do corretor vs. períodos disponíveis [6]
-  async getBrokerMonthlyStatistics(brokerId: string, tenantId: string, month: number, year: number) {
+  async getBrokerMonthlyStatistics(brokerId: string, tenantId: string, month: number, year: number, boothId?: string) {
     // Define a data de início e fim do mês selecionado
     const startOfMonth = new Date(year, month - 1, 1, 0, 0, 0, 0);
     const endOfMonth = new Date(year, month, 0, 23, 59, 59, 999);
@@ -621,6 +621,7 @@ export class PresencesService {
       .andWhere('presence.tenant_id = :tenantId', { tenantId })
       .andWhere('presence.status = :status', { status: 'completed' })
       .andWhere('presence.check_in_at BETWEEN :start AND :end', { start: startOfMonth, end: endOfMonth })
+      .andWhere(boothId ? 'presence.booth_id = :boothId' : '1 = 1', boothId ? { boothId } : {})
       .getMany();
 
     const validCompletedPresences = completedPresences.filter(
@@ -629,7 +630,9 @@ export class PresencesService {
     const completedPeriodsWeightSum = validCompletedPresences.reduce((sum, presence) => sum + Number(presence.period_weight || 1), 0);
     const completedPeriodsCount = validCompletedPresences.length;
 
-    const availablePeriodsGoal = validCompletedPresences[0]?.minimum_monthly_periods || 20; 
+    const availablePeriodsGoal = validCompletedPresences.length > 0
+      ? Math.max(...validCompletedPresences.map((presence) => Number(presence.minimum_monthly_periods || 20)))
+      : 20;
 
     // Calcula a porcentagem de assiduidade real
     const presencePercentage = Math.round((completedPeriodsWeightSum / availablePeriodsGoal) * 100);
@@ -641,6 +644,7 @@ export class PresencesService {
       completedPeriods: completedPeriodsCount,
       completedPeriodsWeightSum,
       monthlyGoal: availablePeriodsGoal,
+      boothId: boothId || null,
       presencePercentage: presencePercentage > 100 ? 100 : presencePercentage, // Limita a 100%
     };
   }

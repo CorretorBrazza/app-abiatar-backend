@@ -27,11 +27,13 @@ export class MessagesService {
     const where = actor.role === 'gerencia_level_2'
       ? { tenant_id: tenantId, status: 'active', role: 'corretor_level_3', manager_id: actor.id }
       : { tenant_id: tenantId, status: 'active' };
-    return this.userRepository.find({
+    const users = await this.userRepository.find({
       where,
       select: { id: true, name: true, nome_guerra: true, email: true, role: true, manager_id: true },
       order: { role: 'ASC', nome_guerra: 'ASC' },
     });
+    return users.filter((user) => user.id !== actor.id);
+
   }
 
   // 1. Envia um comunicado oficial roteando os destinatários de forma dinâmica por escopo [12]
@@ -62,7 +64,7 @@ export class MessagesService {
       recipientUsers = await this.userRepository.find({ where: { tenant_id: tenantId, status: 'active' } });
     } else if (dto.scope === 'all_brokers') {
       recipientUsers = await this.userRepository.find({
-        where: { tenant_id: tenantId, role: 'corretor_level_3' },
+        where: { tenant_id: tenantId, role: 'corretor_level_3', status: 'active' },
       });
     } else if (dto.scope === 'all_managers') {
       recipientUsers = await this.userRepository.find({
@@ -98,6 +100,7 @@ export class MessagesService {
       });
     }
 
+    recipientUsers = recipientUsers.filter((user) => user.id !== senderId && user.status === 'active' && !user.removed_at);
     if (recipientUsers.length === 0) {
       throw new BadRequestException('Nenhum destinatário elegível encontrado para o envio deste comunicado.');
     }

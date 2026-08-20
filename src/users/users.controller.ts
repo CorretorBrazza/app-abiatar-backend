@@ -179,7 +179,20 @@ export class UsersController {
     return this.usersService.approveBroker(brokerId, approveBrokerDto, currentUser, tenantId);
   }
 
-  // 5. Gerente lista seu time ativo e em carência (ROTA PROTEGIDA) [10]
+  // 5. Diretoria lista todos os Corretores ativos e em carência do tenant.
+  @Get('active-brokers')
+  @UseGuards(JwtAuthGuard)
+  async listActiveBrokersForDirector(
+    @CurrentUser() currentUser: { role: string },
+    @TenantId() tenantId: string,
+  ) {
+    if (!['diretoria_level_1', 'platform_admin_level_0'].includes(currentUser.role)) {
+      throw new ForbiddenException('Somente a Diretoria pode consultar todos os Corretores do tenant.');
+    }
+    return this.usersService.listActiveBrokersForDirector(tenantId);
+  }
+
+  // 6. Gerente lista seu time ativo e em carência (ROTA PROTEGIDA) [10]
   @Get('team/:managerId')
   @UseGuards(JwtAuthGuard)
   async findTeam(

@@ -541,6 +541,17 @@ export class UsersService {
       .getMany();
   }
 
+  // Lista todos os Corretores ativos e em carência do tenant para a Diretoria.
+  async listActiveBrokersForDirector(tenantId: string): Promise<User[]> {
+    return this.userRepository.createQueryBuilder('user')
+      .where('user.tenant_id = :tenantId', { tenantId })
+      .andWhere('user.role = :role', { role: 'corretor_level_3' })
+      .andWhere('user.status IN (:...statuses)', { statuses: ['active', 'grace_period'] })
+      .andWhere('user.removed_at IS NULL')
+      .orderBy('user.name', 'ASC')
+      .getMany();
+  }
+
   // 6. Motor Agendador Cron: Roda automaticamente todas as noites à meia-noite [10, 18]
   @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
   async handleCarenciaExpirationCron() {

@@ -4,6 +4,7 @@ export class AddWeeklyPeriodReports1787000013000 implements MigrationInterface {
   name = 'AddWeeklyPeriodReports1787000013000';
 
   async up(queryRunner: QueryRunner): Promise<void> {
+    await queryRunner.query(`CREATE EXTENSION IF NOT EXISTS pgcrypto`);
     await queryRunner.query(`CREATE TABLE IF NOT EXISTS "weekly_period_reports" (
       "id" uuid NOT NULL DEFAULT gen_random_uuid(),
       "tenant_id" uuid NOT NULL,

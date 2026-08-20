@@ -1,12 +1,13 @@
 // src/users/users.service.ts
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, MoreThan, LessThanOrEqual, Raw, IsNull, In, Not } from 'typeorm';
+import { Repository, MoreThan, LessThanOrEqual, Raw, IsNull, In, Not, Brackets } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
 import { Cron, CronExpression } from '@nestjs/schedule';
 
 import { User } from './user.entity';
+import { Tenant } from '../tenants/tenant.entity';
 import { OnboardingLink } from './entities/onboarding-link.entity';
 import { RegisterBrokerDto } from './dto/register-broker.dto';
 import { CreateManagerDto } from './dto/create-manager.dto';
@@ -25,6 +26,9 @@ export class UsersService {
 
     @InjectRepository(OnboardingLink)
     private linkRepository: Repository<OnboardingLink>,
+
+    @InjectRepository(Tenant)
+    private tenantRepository: Repository<Tenant>,
     private notificationsService: NotificationsService,
     private auditService: AuditService,
     private readonly realtimeService: RealtimeService,
@@ -285,12 +289,23 @@ export class UsersService {
     };
   }
 
-  async listManagementUsers(role: string, tenantId: string) {
-    return this.userRepository.find({
-      where: { tenant_id: tenantId, role, removed_at: IsNull() },
-      select: { id: true, name: true, nome_guerra: true, email: true, role: true, status: true, manager_id: true },
-      order: { nome_guerra: 'ASC' },
-    });
+  private async resolvePageSize(tenantId: string, requested?: number) {
+    const configured = Number((await this.tenantRepository.findOne({ where: { id: tenantId }, select: { settings: true } }))?.settings?.pagination?.managementPageSize);
+    return Math.min(100, Math.max(5, Number(requested) || configured || 25));
+  }
+
+  async listManagementUsers(role: string, tenantId: string, query: { page?: number; pageSize?: number; search?: string; status?: string } = {}) {
+    const page = Math.max(1, Number(query.page) || 1);
+    const pageSize = await this.resolvePageSize(tenantId, query.pageSize);
+    const qb = this.userRepository.createQueryBuilder('user')
+      .where('user.tenant_id = :tenantId', { tenantId })
+      .andWhere('user.role = :role', { role })
+      .andWhere('user.removed_at IS NULL');
+    if (query.status && ['active', 'inactive', 'grace_period'].includes(query.status)) qb.andWhere('user.status = :status', { status: query.status });
+    const search = query.search?.trim();
+    if (search) qb.andWhere(new Brackets((sub) => sub.where('LOWER(user.name) LIKE LOWER(:search)', { search: `%${search}%` }).orWhere('LOWER(user.nome_guerra) LIKE LOWER(:search)', { search: `%${search}%` }).orWhere('LOWER(user.email) LIKE LOWER(:search)', { search: `%${search}%` })));
+    const [data, total] = await qb.select(['user.id', 'user.name', 'user.nome_guerra', 'user.email', 'user.role', 'user.status', 'user.manager_id']).orderBy('user.nome_guerra', 'ASC').skip((page - 1) * pageSize).take(pageSize).getManyAndCount();
+    return { data, total, page, pageSize, totalPages: Math.ceil(total / pageSize) };
   }
 
   async getManagementUser(userId: string, tenantId: string) {
@@ -531,25 +546,29 @@ export class UsersService {
   }
 
   // 5. Gerente lista os corretores ativos e em carência do seu time
-  async findTeam(managerId: string, tenantId: string): Promise<User[]> {
-    return this.userRepository.createQueryBuilder('user')
-      .where('user.manager_id = :managerId', { managerId })
-      .andWhere('user.tenant_id = :tenantId', { tenantId })
-      .andWhere('user.status IN (:...statuses)', { statuses: ['active', 'grace_period'] })
-      .andWhere('user.removed_at IS NULL')
-      .orderBy('user.name', 'ASC')
-      .getMany();
+  async findTeam(managerId: string, tenantId: string, query: { page?: number; pageSize?: number; search?: string; status?: string } = {}) {
+    return this.listBrokerScope(tenantId, { managerId, ...query });
   }
 
   // Lista todos os Corretores ativos e em carência do tenant para a Diretoria.
-  async listActiveBrokersForDirector(tenantId: string): Promise<User[]> {
-    return this.userRepository.createQueryBuilder('user')
+  async listActiveBrokersForDirector(tenantId: string, query: { page?: number; pageSize?: number; search?: string; status?: string; managerId?: string } = {}) {
+    return this.listBrokerScope(tenantId, query);
+  }
+
+  private async listBrokerScope(tenantId: string, query: { page?: number; pageSize?: number; search?: string; status?: string; managerId?: string } = {}) {
+    const page = Math.max(1, Number(query.page) || 1);
+    const pageSize = await this.resolvePageSize(tenantId, query.pageSize);
+    const qb = this.userRepository.createQueryBuilder('user')
       .where('user.tenant_id = :tenantId', { tenantId })
       .andWhere('user.role = :role', { role: 'corretor_level_3' })
-      .andWhere('user.status IN (:...statuses)', { statuses: ['active', 'grace_period'] })
-      .andWhere('user.removed_at IS NULL')
-      .orderBy('user.name', 'ASC')
-      .getMany();
+      .andWhere('user.removed_at IS NULL');
+    if (query.managerId) qb.andWhere('user.manager_id = :managerId', { managerId: query.managerId });
+    if (query.status && ['active', 'grace_period', 'inactive'].includes(query.status)) qb.andWhere('user.status = :status', { status: query.status });
+    else qb.andWhere('user.status IN (:...statuses)', { statuses: ['active', 'grace_period'] });
+    const search = query.search?.trim();
+    if (search) qb.andWhere(new Brackets((sub) => sub.where('LOWER(user.name) LIKE LOWER(:search)', { search: `%${search}%` }).orWhere('LOWER(user.nome_guerra) LIKE LOWER(:search)', { search: `%${search}%` }).orWhere('LOWER(user.email) LIKE LOWER(:search)', { search: `%${search}%` })));
+    const [data, total] = await qb.orderBy('user.name', 'ASC').skip((page - 1) * pageSize).take(pageSize).getManyAndCount();
+    return { data, total, page, pageSize, totalPages: Math.ceil(total / pageSize) };
   }
 
   // 6. Motor Agendador Cron: Roda automaticamente todas as noites à meia-noite [10, 18]

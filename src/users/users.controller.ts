@@ -73,6 +73,10 @@ export class UsersController {
     @Query('role') role: string,
     @CurrentUser() currentUser: { sub: string; role: string },
     @TenantId() tenantId: string,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+    @Query('search') search?: string,
+    @Query('status') status?: string,
   ) {
     if (currentUser.role !== 'diretoria_level_1') {
       throw new ForbiddenException('Somente a Diretoria pode consultar os cards de Gerentes e Recepção.');
@@ -80,7 +84,7 @@ export class UsersController {
     if (!['gerencia_level_2', 'recepcao_level_3'].includes(role)) {
       throw new ForbiddenException('Perfil de gestão inválido.');
     }
-    return this.usersService.listManagementUsers(role, tenantId);
+    return this.usersService.listManagementUsers(role, tenantId, { page: Number(page), pageSize: Number(pageSize), search, status });
   }
 
   @Get('management-user/:id')
@@ -185,11 +189,16 @@ export class UsersController {
   async listActiveBrokersForDirector(
     @CurrentUser() currentUser: { role: string },
     @TenantId() tenantId: string,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+    @Query('search') search?: string,
+    @Query('status') status?: string,
+    @Query('managerId') managerId?: string,
   ) {
     if (!['diretoria_level_1', 'platform_admin_level_0'].includes(currentUser.role)) {
       throw new ForbiddenException('Somente a Diretoria pode consultar todos os Corretores do tenant.');
     }
-    return this.usersService.listActiveBrokersForDirector(tenantId);
+    return this.usersService.listActiveBrokersForDirector(tenantId, { page: Number(page), pageSize: Number(pageSize), search, status, managerId });
   }
 
   // 6. Gerente lista seu time ativo e em carência (ROTA PROTEGIDA) [10]
@@ -199,9 +208,13 @@ export class UsersController {
     @Param('managerId') managerId: string,
     @CurrentUser() currentUser: { sub: string; role: string },
     @TenantId() tenantId: string,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+    @Query('search') search?: string,
+    @Query('status') status?: string,
   ) {
     const effectiveManagerId = this.resolveManagerId(managerId, currentUser);
-    return this.usersService.findTeam(effectiveManagerId, tenantId);
+    return this.usersService.findTeam(effectiveManagerId, tenantId, { page: Number(page), pageSize: Number(pageSize), search, status });
   }
 
   @Get(':id/management-profile')

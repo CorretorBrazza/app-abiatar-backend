@@ -28,9 +28,6 @@ import { AuditModule } from './audit/audit.module';
 import { DevSecurityLogger } from './security/dev-security.logger';
 import { DevRequestLoggingMiddleware } from './security/dev-request-logging.middleware';
 import { RealtimeModule } from './realtime/realtime.module';
-import { ReportsModule } from './reports/reports.module';
-import { WeeklyPeriodReport } from './reports/entities/weekly-period-report.entity';
-import { WeeklyPeriodReportItem } from './reports/entities/weekly-period-report-item.entity';
 
 @Module({
   controllers: [AppController],
@@ -54,8 +51,6 @@ import { WeeklyPeriodReportItem } from './reports/entities/weekly-period-report-
         MessageRecipient,
         PushDeviceToken,
         AuditLog,
-        WeeklyPeriodReport,
-        WeeklyPeriodReportItem,
       ],
       synchronize: process.env.NODE_ENV !== 'production' && process.env.TYPEORM_SYNCHRONIZE !== 'false',
       ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
@@ -68,7 +63,6 @@ import { WeeklyPeriodReportItem } from './reports/entities/weekly-period-report-
     NotificationsModule, // <-- ADICIONE ESTA LINHA AO ARRAY
     AuditModule,
     RealtimeModule,
-    ReportsModule,
   ],
 })
 export class AppModule implements NestModule {

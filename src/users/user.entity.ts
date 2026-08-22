@@ -17,7 +17,7 @@ export class User {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column()
+  @Column({ type: 'uuid' })
   tenant_id: string;
 
   @ManyToOne(() => Tenant, (tenant) => tenant.users, { onDelete: 'CASCADE' })
@@ -27,19 +27,19 @@ export class User {
   @Column({ type: 'uuid', nullable: true })
   manager_id: string | null;
 
-  @Column({ length: 150 })
+  @Column({ type: 'varchar', length: 150 })
   name: string;
 
-  @Column({ length: 50 }) // <-- REMOVA O "unique: true" DAQUI
+  @Column({ type: 'varchar', length: 50 })
   nome_guerra: string;
 
-  @Column({ length: 100, unique: true }) // O e-mail continua único globalmente
+  @Column({ type: 'varchar', length: 100, unique: true })
   email: string;
 
-  @Column({ length: 255 })
+  @Column({ type: 'varchar', length: 255 })
   password_hash: string;
 
-  @Column({ length: 20, nullable: true })
+  @Column({ type: 'varchar', length: 20, nullable: true })
   creci: string | null;
 
   @Column({
@@ -64,7 +64,7 @@ export class User {
   })
   broker_stage: 'treinamento' | 'estagiario' | 'corretor_creci' | null;
 
-  @Column({ default: false })
+  @Column({ type: 'boolean', default: false })
   leads_paused: boolean;
 
   @Column({ type: 'varchar', length: 240, nullable: true })
@@ -79,13 +79,13 @@ export class User {
   @Column({ type: 'timestamp', nullable: true })
   carencia_ends_at: Date | null;
 
-  @Column({ default: false })
+  @Column({ type: 'boolean', default: false })
   must_change_password: boolean;
 
   @Column({ type: 'timestamp', nullable: true })
   password_reset_expires_at: Date | null;
 
-  @Column({ default: 0 })
+  @Column({ type: 'int', default: 0 })
   session_version: number;
 
   @CreateDateColumn()

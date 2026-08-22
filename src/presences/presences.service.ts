@@ -1006,4 +1006,85 @@ export class PresencesService {
       heatmap,
     };
   }
+
+  async forceCheckIn(
+    actor: { sub: string; role: string },
+    tenantId: string,
+    dto: { brokerId?: string; boothId?: string; roletaPosition?: number } = {},
+  ) {
+    const targetBrokerId = (['diretoria_level_1', 'gerencia_level_2', 'recepcao_level_3', 'platform_admin_level_0'].includes(actor.role)) && dto.brokerId
+      ? dto.brokerId
+      : actor.sub;
+
+    const broker = await this.presenceRepository.manager.getRepository(User).findOne({ where: { id: targetBrokerId, tenant_id: tenantId } });
+    if (!broker) throw new NotFoundException('Corretor não encontrado.');
+
+    let booth: Booth | null = null;
+    if (dto.boothId) {
+      booth = await this.boothRepository.findOne({ where: { id: dto.boothId, tenant_id: tenantId } });
+    }
+    if (!booth) {
+      booth = await this.boothRepository.findOne({ where: { tenant_id: tenantId, lifecycle_status: 'published' } });
+    }
+    if (!booth) throw new NotFoundException('Nenhum plantão publicado encontrado para check-in.');
+
+    // Finaliza presenças ativas anteriores
+    await this.presenceRepository.update(
+      { broker_id: broker.id, tenant_id: tenantId, status: 'online' },
+      { status: 'completed', check_out_at: new Date() }
+    );
+
+    const now = new Date();
+    const ruleSet = await this.getRuleSetForBooth(booth);
+    const pos = dto.roletaPosition || 1;
+
+    const presence = this.presenceRepository.create({
+      tenant_id: tenantId,
+      broker_id: broker.id,
+      booth_id: booth.id,
+      rule_set_id: ruleSet.id || null,
+      minimum_period_minutes: ruleSet.minimum_period_minutes || 120,
+      period_weight: ruleSet.period_weight || 1,
+      minimum_monthly_periods: ruleSet.minimum_monthly_periods || 20,
+      roleta_name: 'Roleta 1 (Manhã)',
+      roleta_entry_type: 'pontual',
+      roleta_position: pos,
+      validation_starts_at: now,
+      check_in_at: now,
+      last_confirmed_at: now,
+      next_confirmation_at: this.getNextAlignedConfirmationAt(now),
+      accumulated_minutes: 25,
+      status: 'online',
+    });
+
+    const saved = await this.presenceRepository.save(presence);
+    this.realtimeService.publish({
+      eventType: 'presence.checked_in',
+      tenantId,
+      aggregateId: saved.id,
+      payload: {
+        brokerId: broker.id,
+        boothId: booth.id,
+        status: saved.status,
+        roletaPosition: saved.roleta_position,
+        roletaEntryType: saved.roleta_entry_type,
+        nextConfirmationAt: saved.next_confirmation_at,
+      },
+    });
+
+    return {
+      message: `Check-in ativo registrado para o corretor '${broker.nome_guerra}' no plantão '${booth.name}'!`,
+      presence: {
+        id: saved.id,
+        boothId: booth.id,
+        boothName: booth.name,
+        brokerId: broker.id,
+        brokerName: broker.nome_guerra,
+        status: saved.status,
+        roletaPosition: saved.roleta_position,
+        roletaName: saved.roleta_name,
+        checkInAt: saved.check_in_at,
+      },
+    };
+  }
 }

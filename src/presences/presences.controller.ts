@@ -111,4 +111,14 @@ export class PresencesController {
     }
     return this.presencesService.getBoothDemandHeatmap(boothId, tenantId);
   }
+
+  @Post('force-check-in')
+  @UseGuards(JwtAuthGuard)
+  async forceCheckIn(
+    @Body() dto: { brokerId?: string; boothId?: string; roletaPosition?: number },
+    @CurrentUser() currentUser: { sub: string; role: string },
+    @TenantId() tenantId: string,
+  ) {
+    return this.presencesService.forceCheckIn(currentUser, tenantId, dto);
+  }
 }

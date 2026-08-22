@@ -7,10 +7,10 @@ import { CreateManagerDto } from './dto/create-manager.dto';
 import { CreateReceptionistDto } from './dto/create-receptionist.dto';
 import { CreateOnboardingLinkDto } from './dto/create-onboarding-link.dto';
 import { RegisterManagerDto } from './dto/register-manager.dto';
-import { TransferBrokerDto, UpdateBrokerLeadPauseDto, UpdateBrokerProfileDto } from './dto/update-broker-profile.dto';
+import { TransferBrokerDto, UpdateBrokerLeadPauseDto, UpdateBrokerProfileDto, UpdateBrokerStageDto } from './dto/update-broker-profile.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { TenantId } from '../auth/decorators/tenant-id.decorator';
-import { CurrentUser } from '../auth/decorators/current-user.decorator'; // (Opcional - criaremos na sequência se necessário, ou usamos request.user)
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
 
 @Controller('users')
 export class UsersController {
@@ -27,6 +27,12 @@ export class UsersController {
       throw new ForbiddenException('A gerência só pode acessar a própria equipe.');
     }
     return requestedManagerId;
+  }
+
+  // Lista gerentes ativos para a tela pública de cadastro (SEM GUARD DE AUTENTICAÇÃO)
+  @Get('public-managers')
+  async getPublicManagers(@Query('tenantSlug') tenantSlug?: string) {
+    return this.usersService.getPublicManagers(tenantSlug);
   }
 
   // Diretoria cria um gerente dentro do próprio tenant (ROTA PROTEGIDA)
@@ -236,6 +242,17 @@ export class UsersController {
     @TenantId() tenantId: string,
   ) {
     return this.usersService.updateBrokerProfile(brokerId, dto, currentUser, tenantId);
+  }
+
+  @Patch(':id/stage')
+  @UseGuards(JwtAuthGuard)
+  async updateBrokerStage(
+    @Param('id') brokerId: string,
+    @Body() dto: UpdateBrokerStageDto,
+    @CurrentUser() currentUser: { sub: string; role: string },
+    @TenantId() tenantId: string,
+  ) {
+    return this.usersService.updateBrokerStage(brokerId, dto, currentUser, tenantId);
   }
 
   @Patch(':id/leads-pause')

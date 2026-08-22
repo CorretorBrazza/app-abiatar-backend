@@ -13,7 +13,7 @@ import { RegisterBrokerDto } from './dto/register-broker.dto';
 import { CreateManagerDto } from './dto/create-manager.dto';
 import { CreateReceptionistDto } from './dto/create-receptionist.dto';
 import { ApproveBrokerDto } from './dto/approve-broker.dto';
-import { TransferBrokerDto, UpdateBrokerLeadPauseDto, UpdateBrokerProfileDto } from './dto/update-broker-profile.dto';
+import { TransferBrokerDto, UpdateBrokerLeadPauseDto, UpdateBrokerProfileDto, UpdateBrokerStageDto } from './dto/update-broker-profile.dto';
 import { NotificationsService } from '../notifications/notifications.service';
 import { AuditService } from '../audit/audit.service';
 import { RealtimeService } from '../realtime/realtime.service';
@@ -228,30 +228,92 @@ export class UsersService {
     return { message: 'Cadastro de Gerente concluído com sucesso.', user: { id: manager.id, name: manager.name, nome_guerra: manager.nome_guerra, email: manager.email, role: manager.role } };
   }
 
-  // 2. Corretor se cadastra sozinho através do link (Rota Pública - Sem Token JWT)
-  async registerBroker(dto: RegisterBrokerDto) {
-    const normalizedNomeGuerra = this.normalizeNomeGuerra(dto.nomeGuerra);
-    // Valida se o link de onboarding existe e ainda está dentro do prazo
-    const link = await this.linkRepository.findOne({
-      where: { 
-        token: dto.token, 
-        valid_until: MoreThan(new Date()),
-        is_used: false 
-      },
+  async getPublicManagers(tenantSlug?: string) {
+    let tenant: Tenant | null = null;
+    if (tenantSlug?.trim()) {
+      tenant = await this.tenantRepository.findOne({ where: { slug: tenantSlug.trim() } });
+    }
+    if (!tenant) {
+      tenant = await this.tenantRepository.findOne({ where: { slug: 'abiatar-teste' } });
+    }
+    if (!tenant) {
+      tenant = await this.tenantRepository.findOne({ order: { created_at: 'ASC' } });
+    }
+    if (!tenant) {
+      throw new NotFoundException('Empresa não encontrada.');
+    }
+
+    const managers = await this.userRepository.find({
+      where: { tenant_id: tenant.id, role: 'gerencia_level_2', status: 'active', removed_at: IsNull() },
+      select: { id: true, name: true, nome_guerra: true },
+      order: { nome_guerra: 'ASC' },
     });
 
-    if (!link) {
-      throw new BadRequestException('O link de cadastro é inválido, expirou ou já foi utilizado.');
-    }
-    if (link.invited_role !== 'corretor_level_3' || !link.manager_id) {
-      throw new BadRequestException('Este convite não é destinado ao cadastro de Corretor.');
+    return {
+      tenant: {
+        id: tenant.id,
+        name: tenant.name,
+        slug: tenant.slug,
+        primary_color: tenant.primary_color,
+        logo_url: tenant.logo_url,
+      },
+      managers,
+    };
+  }
+
+  // 2. Corretor se cadastra (Rota Pública: Aceita seleção de Gerente OU Token de Convite)
+  async registerBroker(dto: RegisterBrokerDto) {
+    const normalizedNomeGuerra = this.normalizeNomeGuerra(dto.nomeGuerra);
+    let tenantId: string;
+    let managerId: string;
+    let link: any = null;
+
+    if (dto.token?.trim()) {
+      // Validação por convite legado
+      link = await this.linkRepository.findOne({
+        where: { 
+          token: dto.token.trim(), 
+          valid_until: MoreThan(new Date()),
+          is_used: false 
+        },
+      });
+
+      if (!link) {
+        throw new BadRequestException('O link de cadastro é inválido, expirou ou já foi utilizado.');
+      }
+      if (link.invited_role !== 'corretor_level_3' || !link.manager_id) {
+        throw new BadRequestException('Este convite não é destinado ao cadastro de Corretor.');
+      }
+
+      tenantId = link.tenant_id;
+      managerId = link.manager_id;
+    } else if (dto.managerId) {
+      // Cadastro sem convite: com seleção direta do Gerente
+      const manager = await this.userRepository.findOne({
+        where: { id: dto.managerId, role: 'gerencia_level_2', status: 'active', removed_at: IsNull() },
+      });
+      if (!manager) {
+        throw new BadRequestException('O Gerente selecionado não está ativo ou não foi encontrado.');
+      }
+      tenantId = manager.tenant_id;
+      managerId = manager.id;
+    } else {
+      throw new BadRequestException('Selecione o seu Gerente responsável para concluir o cadastro.');
     }
 
-// Validação de unicidade do Nome de Guerra RESTRITA a esta construtora
+    const stage = dto.brokerStage || 'corretor_creci';
+    if (stage === 'estagiario' && (!dto.creci || !dto.creci.trim())) {
+      throw new BadRequestException('O CRECI de Estágio é obrigatório para corretores estagiários.');
+    }
+    if (stage === 'corretor_creci' && (!dto.creci || !dto.creci.trim())) {
+      throw new BadRequestException('O CRECI profissional é obrigatório.');
+    }
+
+    // Validação de unicidade do Nome de Guerra RESTRITA a esta construtora
     const existingNomeGuerra = await this.userRepository.findOne({
       where: { 
         nome_guerra: Raw((alias) => `LOWER(${alias}) = LOWER(:nomeGuerra)`, { nomeGuerra: normalizedNomeGuerra }),
-        tenant_id: link.tenant_id
+        tenant_id: tenantId
       },
     });
     if (existingNomeGuerra) {
@@ -259,7 +321,7 @@ export class UsersService {
     }
 
     // Validação de e-mail único
-    const existingEmail = await this.userRepository.findOne({ where: { email: dto.email } });
+    const existingEmail = await this.userRepository.findOne({ where: { email: dto.email.trim().toLowerCase() } });
     if (existingEmail) {
       throw new BadRequestException('Este e-mail de usuário já está cadastrado.');
     }
@@ -269,21 +331,45 @@ export class UsersService {
     const passwordHashed = await bcrypt.hash(dto.passwordHash, salt);
 
     // Cria o registro do Corretor (Status: Inativo, aguardando aprovação do Gerente)
-    const broker = this.userRepository.create({
-      tenant_id: link.tenant_id,
-        manager_id: link.manager_id,
-      name: dto.name,
+    const broker: User = this.userRepository.create({
+      tenant_id: tenantId,
+      manager_id: managerId,
+      name: dto.name.trim(),
       nome_guerra: normalizedNomeGuerra,
-      email: dto.email,
+      email: dto.email.trim().toLowerCase(),
       password_hash: passwordHashed,
-      creci: dto.creci,
+      creci: dto.creci ? dto.creci.trim().toUpperCase() : null,
+      broker_stage: stage,
       role: 'corretor_level_3',
       status: 'inactive', // Fica inativo até que o gerente aprove
     });
 
-    await this.userRepository.save(broker);
-    link.is_used = true;
-    await this.linkRepository.save(link);
+    const saved: User = await this.userRepository.save(broker);
+    if (link) {
+      link.is_used = true;
+      await this.linkRepository.save(link);
+    }
+
+    // Notifica o gerente em tempo real e push
+    this.realtimeService.publish({
+      eventType: 'broker.registered',
+      tenantId,
+      aggregateId: saved.id,
+      payload: {
+        brokerId: saved.id,
+        brokerName: saved.nome_guerra,
+        managerId,
+        stage: saved.broker_stage,
+      },
+    });
+
+    void this.notificationsService.sendToUser(
+      managerId,
+      tenantId,
+      'Novo corretor cadastrado',
+      `O corretor ${saved.nome_guerra} solicitou cadastro na sua equipe. Acesse o painel para aprovar.`,
+      { type: 'broker_registered', brokerId: saved.id },
+    );
 
     return {
       message: 'Seu cadastro foi enviado! Aguarde a aprovação do seu gerente para acessar o sistema.',
@@ -396,8 +482,12 @@ export class UsersService {
       broker.carencia_ends_at = carenciaExpiration;
     }
 
+    if (dto.brokerStage) {
+      broker.broker_stage = dto.brokerStage;
+    }
+
     await this.userRepository.save(broker);
-    this.realtimeService.publish({ eventType: 'broker.approved', tenantId, aggregateId: broker.id, payload: { brokerId: broker.id, managerId: broker.manager_id, status: broker.status, carenciaEndsAt: broker.carencia_ends_at } });
+    this.realtimeService.publish({ eventType: 'broker.approved', tenantId, aggregateId: broker.id, payload: { brokerId: broker.id, managerId: broker.manager_id, status: broker.status, brokerStage: broker.broker_stage, carenciaEndsAt: broker.carencia_ends_at } });
     const approvalMessage = dto.carenciaDays === 0
       ? 'Seu cadastro foi aprovado sem carência. Você poderá atuar conforme as regras de presença e elegibilidade.'
       : `Seu cadastro foi aprovado. Sua carência termina em ${carenciaExpiration.toLocaleDateString('pt-BR')}.`;
@@ -406,7 +496,7 @@ export class UsersService {
       tenantId,
       'Cadastro aprovado',
       approvalMessage,
-      { type: 'broker_approved', brokerId: broker.id, carenciaDays: dto.carenciaDays, approvedBy: approver.sub, approvedByRole: approver.role },
+      { type: 'broker_approved', brokerId: broker.id, carenciaDays: dto.carenciaDays, brokerStage: broker.broker_stage, approvedBy: approver.sub, approvedByRole: approver.role },
     );
 
     return {
@@ -414,6 +504,7 @@ export class UsersService {
         ? `Corretor '${broker.nome_guerra}' aprovado sem carência.`
         : `Corretor '${broker.nome_guerra}' aprovado com sucesso! Carência definida por ${dto.carenciaDays} dias.`,
       carencia_ends_at: broker.carencia_ends_at,
+      broker_stage: broker.broker_stage,
     };
   }
 
@@ -444,6 +535,7 @@ export class UsersService {
       nome_guerra: broker.nome_guerra,
       email: broker.email,
       creci: broker.creci,
+      broker_stage: broker.broker_stage || 'corretor_creci',
       role: broker.role,
       status: broker.status,
       manager_id: broker.manager_id,
@@ -464,7 +556,7 @@ export class UsersService {
     tenantId: string,
   ) {
     const broker = await this.getBrokerForManagement(brokerId, actor, tenantId);
-    const before = { name: broker.name, nome_guerra: broker.nome_guerra, email: broker.email, creci: broker.creci };
+    const before = { name: broker.name, nome_guerra: broker.nome_guerra, email: broker.email, creci: broker.creci, broker_stage: broker.broker_stage };
     if (dto.email && dto.email !== broker.email) {
       const existingEmail = await this.userRepository.findOne({ where: { email: dto.email } });
       if (existingEmail && existingEmail.id !== broker.id) throw new BadRequestException('Este e-mail já está em uso.');
@@ -479,12 +571,40 @@ export class UsersService {
     }
     if (dto.name !== undefined) broker.name = dto.name.trim();
     if (dto.email !== undefined) broker.email = dto.email.trim().toLowerCase();
-    if (dto.creci !== undefined) broker.creci = dto.creci.trim().toUpperCase();
+    if (dto.creci !== undefined) broker.creci = dto.creci ? dto.creci.trim().toUpperCase() : null;
+    if (dto.brokerStage !== undefined) broker.broker_stage = dto.brokerStage;
     const saved = await this.userRepository.save(broker);
     void this.auditService.record({ tenantId, actorUserId: actor.sub, actorRole: actor.role }, {
       action: 'BROKER_PROFILE_UPDATED', entityType: 'USER', entityId: saved.id, beforeData: before,
-      afterData: { name: saved.name, nome_guerra: saved.nome_guerra, email: saved.email, creci: saved.creci },
+      afterData: { name: saved.name, nome_guerra: saved.nome_guerra, email: saved.email, creci: saved.creci, broker_stage: saved.broker_stage },
     });
+    return this.getBrokerManagementProfile(saved.id, actor, tenantId);
+  }
+
+  async updateBrokerStage(
+    brokerId: string,
+    dto: UpdateBrokerStageDto,
+    actor: { sub: string; role: string },
+    tenantId: string,
+  ) {
+    const broker = await this.getBrokerForManagement(brokerId, actor, tenantId);
+    const before = { broker_stage: broker.broker_stage, creci: broker.creci };
+
+    broker.broker_stage = dto.brokerStage;
+    if (dto.creci !== undefined) {
+      broker.creci = dto.creci ? dto.creci.trim().toUpperCase() : null;
+    }
+    const saved = await this.userRepository.save(broker);
+
+    void this.auditService.record({ tenantId, actorUserId: actor.sub, actorRole: actor.role }, {
+      action: 'BROKER_STAGE_UPDATED',
+      entityType: 'USER',
+      entityId: saved.id,
+      beforeData: before,
+      afterData: { broker_stage: saved.broker_stage, creci: saved.creci },
+      reason: `Estágio de corretor atualizado para '${saved.broker_stage}'`,
+    });
+
     return this.getBrokerManagementProfile(saved.id, actor, tenantId);
   }
 

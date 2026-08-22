@@ -1,4 +1,4 @@
-import { IsEmail, IsOptional, IsString, Length, Matches } from 'class-validator';
+import { IsEmail, IsIn, IsOptional, IsString, Length, Matches } from 'class-validator';
 
 export class UpdateBrokerProfileDto {
   @IsOptional()
@@ -18,7 +18,21 @@ export class UpdateBrokerProfileDto {
 
   @IsOptional()
   @IsString()
-  @Length(3, 20)
+  @Length(1, 30)
+  creci?: string;
+
+  @IsOptional()
+  @IsIn(['treinamento', 'estagiario', 'corretor_creci'])
+  brokerStage?: 'treinamento' | 'estagiario' | 'corretor_creci';
+}
+
+export class UpdateBrokerStageDto {
+  @IsIn(['treinamento', 'estagiario', 'corretor_creci'])
+  brokerStage: 'treinamento' | 'estagiario' | 'corretor_creci';
+
+  @IsOptional()
+  @IsString()
+  @Length(1, 30)
   creci?: string;
 }
 
@@ -37,3 +51,4 @@ export class TransferBrokerDto {
   @Length(3, 240)
   reason?: string;
 }
+

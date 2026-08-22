@@ -40,7 +40,7 @@ export class User {
   password_hash: string;
 
   @Column({ length: 20, nullable: true })
-  creci: string;
+  creci: string | null;
 
   @Column({
     type: 'enum',
@@ -55,6 +55,14 @@ export class User {
     default: 'active',
   })
   status: string;
+
+  @Column({
+    type: 'enum',
+    enum: ['treinamento', 'estagiario', 'corretor_creci'],
+    default: 'corretor_creci',
+    nullable: true,
+  })
+  broker_stage: 'treinamento' | 'estagiario' | 'corretor_creci' | null;
 
   @Column({ default: false })
   leads_paused: boolean;

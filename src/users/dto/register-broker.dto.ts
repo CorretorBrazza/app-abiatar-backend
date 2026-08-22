@@ -1,10 +1,23 @@
 // src/users/dto/register-broker.dto.ts
-import { IsEmail, IsString, Length } from 'class-validator';
+import { IsEmail, IsIn, IsOptional, IsString, IsUUID, Length } from 'class-validator';
 
 export class RegisterBrokerDto {
+  @IsOptional()
   @IsString()
-  @Length(20, 128)
-  token: string;
+  @Length(10, 128)
+  token?: string;
+
+  @IsOptional()
+  @IsUUID()
+  managerId?: string;
+
+  @IsOptional()
+  @IsString()
+  tenantSlug?: string;
+
+  @IsOptional()
+  @IsIn(['treinamento', 'estagiario', 'corretor_creci'])
+  brokerStage?: 'treinamento' | 'estagiario' | 'corretor_creci';
 
   @IsString()
   @Length(2, 150)
@@ -21,7 +34,9 @@ export class RegisterBrokerDto {
   @Length(8, 128)
   passwordHash: string;
 
+  @IsOptional()
   @IsString()
-  @Length(2, 20)
-  creci: string;
+  @Length(1, 30)
+  creci?: string;
 }
+

@@ -57,8 +57,8 @@ export class User {
   status: string;
 
   @Column({
-    type: 'enum',
-    enum: ['treinamento', 'estagiario', 'corretor_creci'],
+    type: 'varchar',
+    length: 32,
     default: 'corretor_creci',
     nullable: true,
   })

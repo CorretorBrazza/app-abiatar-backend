@@ -1,13 +1,14 @@
 // src/messages/messages.service.ts
 import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, In, IsNull } from 'typeorm'; // <-- ADICIONADO "IsNull" AQUI
+import { Repository, In, IsNull } from 'typeorm';
 
 import { Message } from './entities/message.entity';
 import { MessageRecipient } from './entities/message-recipient.entity';
 import { User } from '../users/user.entity';
 import { CreateMessageDto } from './dto/create-message.dto';
 import { NotificationsService } from '../notifications/notifications.service';
+import { RealtimeService } from '../realtime/realtime.service';
 
 @Injectable()
 export class MessagesService {
@@ -21,19 +22,20 @@ export class MessagesService {
     @InjectRepository(User)
     private userRepository: Repository<User>,
     private notificationsService: NotificationsService,
+    private readonly realtimeService: RealtimeService,
   ) {}
 
   async listRecipients(tenantId: string, actor: { id: string; role: string }) {
+    const validStatuses = In(['active', 'grace_period']);
     const where = actor.role === 'gerencia_level_2'
-      ? { tenant_id: tenantId, status: 'active', role: 'corretor_level_3', manager_id: actor.id }
-      : { tenant_id: tenantId, status: 'active' };
+      ? { tenant_id: tenantId, status: validStatuses, role: 'corretor_level_3', manager_id: actor.id, removed_at: IsNull() }
+      : { tenant_id: tenantId, status: validStatuses, removed_at: IsNull() };
     const users = await this.userRepository.find({
       where,
       select: { id: true, name: true, nome_guerra: true, email: true, role: true, manager_id: true },
       order: { role: 'ASC', nome_guerra: 'ASC' },
     });
     return users.filter((user) => user.id !== actor.id);
-
   }
 
   // 1. Envia um comunicado oficial roteando os destinatários de forma dinâmica por escopo [12]
@@ -46,8 +48,8 @@ export class MessagesService {
     const message = this.messageRepository.create({
       tenant_id: tenantId,
       sender_id: senderId,
-      title: dto.title,
-      content: dto.content,
+      title: dto.title.trim(),
+      content: dto.content.trim(),
       is_urgent: dto.isUrgent || false,
     });
 
@@ -59,20 +61,24 @@ export class MessagesService {
       throw new ForbiddenException('A Gerência só pode enviar mensagens para Corretores da própria equipe.');
     }
 
+    const validStatuses = In(['active', 'grace_period']);
+
     // B. MOTOR DE ROTEAMENTO: Identifica os destinatários pelo Escopo do DTO [12]
     if (dto.scope === 'all_users') {
-      recipientUsers = await this.userRepository.find({ where: { tenant_id: tenantId, status: 'active' } });
+      recipientUsers = await this.userRepository.find({ 
+        where: { tenant_id: tenantId, status: validStatuses, removed_at: IsNull() } 
+      });
     } else if (dto.scope === 'all_brokers') {
       recipientUsers = await this.userRepository.find({
-        where: { tenant_id: tenantId, role: 'corretor_level_3', status: 'active' },
+        where: { tenant_id: tenantId, role: 'corretor_level_3', status: validStatuses, removed_at: IsNull() },
       });
     } else if (dto.scope === 'all_managers') {
       recipientUsers = await this.userRepository.find({
-        where: { tenant_id: tenantId, role: 'gerencia_level_2', status: 'active' },
+        where: { tenant_id: tenantId, role: 'gerencia_level_2', status: validStatuses, removed_at: IsNull() },
       });
     } else if (dto.scope === 'all_receptionists') {
       recipientUsers = await this.userRepository.find({
-        where: { tenant_id: tenantId, role: 'recepcao_level_3', status: 'active' },
+        where: { tenant_id: tenantId, role: 'recepcao_level_3', status: validStatuses, removed_at: IsNull() },
       });
     } else if (dto.scope === 'specific_team') {
       if (!dto.targetManagerId) {
@@ -83,10 +89,10 @@ export class MessagesService {
       }
       recipientUsers = await this.userRepository.find({
         where: sender.role === 'gerencia_level_2'
-          ? { manager_id: sender.id, tenant_id: tenantId, role: 'corretor_level_3', status: 'active' }
+          ? { manager_id: sender.id, tenant_id: tenantId, role: 'corretor_level_3', status: validStatuses, removed_at: IsNull() }
           : [
-              { id: dto.targetManagerId, tenant_id: tenantId },
-              { manager_id: dto.targetManagerId, tenant_id: tenantId }
+              { id: dto.targetManagerId, tenant_id: tenantId, status: validStatuses, removed_at: IsNull() },
+              { manager_id: dto.targetManagerId, tenant_id: tenantId, role: 'corretor_level_3', status: validStatuses, removed_at: IsNull() }
             ],
       });
     } else if (dto.scope === 'individual') {
@@ -95,12 +101,12 @@ export class MessagesService {
       }
       recipientUsers = await this.userRepository.find({
         where: sender.role === 'gerencia_level_2'
-          ? { id: In(dto.individualRecipientIds), tenant_id: tenantId, role: 'corretor_level_3', manager_id: sender.id, status: 'active' }
-          : { id: In(dto.individualRecipientIds), tenant_id: tenantId, status: 'active' },
+          ? { id: In(dto.individualRecipientIds), tenant_id: tenantId, role: 'corretor_level_3', manager_id: sender.id, status: validStatuses, removed_at: IsNull() }
+          : { id: In(dto.individualRecipientIds), tenant_id: tenantId, status: validStatuses, removed_at: IsNull() },
       });
     }
 
-    recipientUsers = recipientUsers.filter((user) => user.id !== senderId && user.status === 'active' && !user.removed_at);
+    recipientUsers = recipientUsers.filter((user) => user.id !== senderId && (user.status === 'active' || user.status === 'grace_period') && !user.removed_at);
     if (recipientUsers.length === 0) {
       throw new BadRequestException('Nenhum destinatário elegível encontrado para o envio deste comunicado.');
     }
@@ -115,6 +121,21 @@ export class MessagesService {
     );
 
     await this.recipientRepository.save(recipientEntities);
+
+    // D. Notificação em tempo real via SSE
+    this.realtimeService.publish({
+      eventType: 'message.created',
+      tenantId,
+      aggregateId: savedMessage.id,
+      payload: {
+        messageId: savedMessage.id,
+        title: dto.title,
+        isUrgent: dto.isUrgent || false,
+        recipientIds: recipientUsers.map((user) => user.id),
+      },
+    });
+
+    // E. Notificações Push via Firebase FCM
     const pushSentCount = await this.notificationsService.sendToUsers(
       recipientUsers.map((user) => user.id),
       tenantId,

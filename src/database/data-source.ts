@@ -27,6 +27,7 @@ import { ResetAbiatarTestForRecreation1787000009000 } from './migrations/1787000
 import { AddTenantWhiteLabelSettings1787000010000 } from './migrations/1787000010000-AddTenantWhiteLabelSettings';
 import { AddPresenceConfirmationCycle1787000011000 } from './migrations/1787000011000-AddPresenceConfirmationCycle';
 import { AddBoothRulePeriods1787000012000 } from './migrations/1787000012000-AddBoothRulePeriods';
+import { AddBrokerStageColumn1787000013000 } from './migrations/1787000013000-AddBrokerStageColumn';
 
 export const AppDataSource = new DataSource({
   type: 'postgres',
@@ -46,7 +47,22 @@ export const AppDataSource = new DataSource({
     PushDeviceToken,
     AuditLog,
   ],
-  migrations: [CreateAuditLogs1787000000000, AddReceptionAssignments1787000001000, AddBoothRuleSets1787000002000, AddBoothLifecycle1787000003000, GeneralizeOnboardingLinks1787000004000, ConfigurePresenceConfirmationWindow1787000005000, AddBrokerManagementState1787000006000, CleanupAbiatarTestUsers1787000007000, AddPasswordResetState1787000008000, ResetAbiatarTestForRecreation1787000009000, AddTenantWhiteLabelSettings1787000010000, AddPresenceConfirmationCycle1787000011000, AddBoothRulePeriods1787000012000],
+  migrations: [
+    CreateAuditLogs1787000000000, 
+    AddReceptionAssignments1787000001000, 
+    AddBoothRuleSets1787000002000, 
+    AddBoothLifecycle1787000003000, 
+    GeneralizeOnboardingLinks1787000004000, 
+    ConfigurePresenceConfirmationWindow1787000005000, 
+    AddBrokerManagementState1787000006000, 
+    CleanupAbiatarTestUsers1787000007000, 
+    AddPasswordResetState1787000008000, 
+    ResetAbiatarTestForRecreation1787000009000, 
+    AddTenantWhiteLabelSettings1787000010000, 
+    AddPresenceConfirmationCycle1787000011000, 
+    AddBoothRulePeriods1787000012000,
+    AddBrokerStageColumn1787000013000,
+  ],
   migrationsRun: false,
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
 });

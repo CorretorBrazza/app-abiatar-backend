@@ -39,6 +39,15 @@ export class PresencesController {
     return this.presencesService.getBrokerDashboardSummary(brokerId, tenantId);
   }
 
+  @Get('team-eligibility')
+  @UseGuards(JwtAuthGuard)
+  async getTeamWeekendEligibility(
+    @CurrentUser() currentUser: { sub: string; role: string },
+    @TenantId() tenantId: string,
+  ) {
+    return this.presencesService.getTeamWeekendEligibility(currentUser, tenantId);
+  }
+
   @Get('current')
   @UseGuards(JwtAuthGuard)
   async getCurrentPresence(

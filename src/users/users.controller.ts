@@ -293,10 +293,13 @@ export class UsersController {
   }
   // Adicione esta rota dentro da classe UsersController, em src/users/users.controller.ts
 
-  // Rota para o Gestor de Leads consultar a fila de distribuição ao vivo (ROTA PROTEGIDA) [6]
+  // Rota para o Gestor de Leads / Gerente consultar a fila de distribuição ao vivo (ROTA PROTEGIDA) [6]
   @Get('leads-queue')
   @UseGuards(JwtAuthGuard)
-  async getRealTimeLeadsQueue(@TenantId() tenantId: string) {
-    return this.usersService.getRealTimeLeadsQueue(tenantId);
+  async getRealTimeLeadsQueue(
+    @TenantId() tenantId: string,
+    @CurrentUser() currentUser: { sub: string; role: string },
+  ) {
+    return this.usersService.getRealTimeLeadsQueue(tenantId, currentUser);
   }
 }

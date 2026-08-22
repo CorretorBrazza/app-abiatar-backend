@@ -1,10 +1,11 @@
 // src/presences/presences.service.ts
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, IsNull } from 'typeorm';
 import { Cron, CronExpression } from '@nestjs/schedule'; // Importa o decorador de tarefas agendadas
 
 import { Presence } from './entities/presence.entity';
+import { User } from '../users/user.entity';
 import { Booth } from '../booths/entities/booth.entity';
 import { BoothRuleSet } from '../booths/entities/booth-rule-set.entity';
 import { DeadManLog } from './entities/dead-man-log.entity';
@@ -145,6 +146,79 @@ export class PresencesService {
       );
     }
 
+    const now = new Date();
+    const dayOfWeek = now.getDay();
+    const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+
+    const roletaTimes = isWeekend
+      ? [{ name: 'Roleta Fim de Semana', time: ruleSet.roleta_weekend_time || '09:00' }]
+      : [
+          { name: 'Roleta 1 (Manhã)', time: ruleSet.roleta_1_time || '09:00' },
+          { name: 'Roleta 2 (Tarde)', time: ruleSet.roleta_2_time || '14:00' },
+          ...(ruleSet.roleta_3_time ? [{ name: 'Roleta 3 (Noite)', time: ruleSet.roleta_3_time }] : []),
+        ];
+
+    const earlyMinutes = Number(ruleSet.checkin_early_minutes ?? 30);
+    const posBarraMinutes = Number(ruleSet.pos_barra_minutes ?? 30);
+
+    let assignedRoletaName = roletaTimes[0]?.name || 'Roleta 1 (Manhã)';
+    let assignedEntryType: 'pontual' | 'pos_barra' = 'pontual';
+    let assignedValidationStartsAt: Date = now;
+    let assignedPosition: number | null = null;
+
+    let matchingRoleta: any = null;
+    for (const r of roletaTimes) {
+      const [h, m] = r.time.split(':').map(Number);
+      const roletaStart = new Date(now);
+      roletaStart.setHours(h, m, 0, 0);
+
+      const earlyOpen = new Date(roletaStart.getTime() - earlyMinutes * 60 * 1000);
+      const drawTime = new Date(roletaStart.getTime() + 1 * 60 * 1000);
+      const posBarraEnd = new Date(roletaStart.getTime() + posBarraMinutes * 60 * 1000);
+
+      if (now.getTime() >= earlyOpen.getTime() && now.getTime() <= posBarraEnd.getTime()) {
+        matchingRoleta = {
+          name: r.name,
+          roletaStart,
+          earlyOpen,
+          drawTime,
+          posBarraEnd,
+          isPontual: now.getTime() < drawTime.getTime(),
+          isPosBarra: now.getTime() >= drawTime.getTime() && now.getTime() <= posBarraEnd.getTime(),
+        };
+        break;
+      }
+    }
+
+    if (matchingRoleta) {
+      assignedRoletaName = matchingRoleta.name;
+      if (matchingRoleta.isPontual) {
+        assignedEntryType = 'pontual';
+        assignedValidationStartsAt = matchingRoleta.roletaStart;
+        assignedPosition = null; // Fica aguardando o sorteio automático das 09:01
+      } else {
+        assignedEntryType = 'pos_barra';
+        assignedValidationStartsAt = now; // No pós-barra, os 120 min contam a partir da chegada
+        
+        // Pós-Barra entra automaticamente no final da fila
+        const existingInBooth = await this.presenceRepository.find({
+          where: {
+            booth_id: dto.boothId,
+            tenant_id: tenantId,
+            status: 'online',
+            roleta_name: assignedRoletaName,
+          },
+        });
+        const maxPos = existingInBooth.reduce((max, p) => Math.max(max, p.roleta_position || 0), 0);
+        assignedPosition = maxPos + 1;
+      }
+    } else {
+      assignedRoletaName = roletaTimes[0]?.name || 'Roleta Normal';
+      assignedEntryType = 'pontual';
+      assignedValidationStartsAt = now;
+      assignedPosition = null;
+    }
+
     const presence = this.presenceRepository.create({
       tenant_id: tenantId,
       broker_id: brokerId,
@@ -153,18 +227,30 @@ export class PresencesService {
       minimum_period_minutes: ruleSet.minimum_period_minutes,
       period_weight: ruleSet.period_weight,
       minimum_monthly_periods: ruleSet.minimum_monthly_periods,
-      check_in_at: new Date(),
-      last_confirmed_at: new Date(),
-      next_confirmation_at: this.getNextAlignedConfirmationAt(new Date()),
+      roleta_name: assignedRoletaName,
+      roleta_entry_type: assignedEntryType,
+      roleta_position: assignedPosition,
+      validation_starts_at: assignedValidationStartsAt,
+      check_in_at: now,
+      last_confirmed_at: now,
+      next_confirmation_at: this.getNextAlignedConfirmationAt(now),
       status: 'online',
     });
 
     const savedPresence = await this.presenceRepository.save(presence);
-    this.realtimeService.publish({ eventType: 'presence.checked_in', tenantId, aggregateId: savedPresence.id, payload: { brokerId, boothId: dto.boothId, status: savedPresence.status, nextConfirmationAt: savedPresence.next_confirmation_at } });
+    this.realtimeService.publish({ eventType: 'presence.checked_in', tenantId, aggregateId: savedPresence.id, payload: { brokerId, boothId: dto.boothId, status: savedPresence.status, nextConfirmationAt: savedPresence.next_confirmation_at, roletaPosition: savedPresence.roleta_position, roletaEntryType: savedPresence.roleta_entry_type } });
+
+    // Tenta processar sorteios pendentes caso o check-in ocorra no marco do sorteio
+    void this.processRoletaDraws();
 
     return {
-      message: 'Check-in realizado com sucesso! Presença confirmada.',
+      message: assignedEntryType === 'pos_barra'
+        ? `Check-in Pós-Barra confirmado! Você assumiu o ${assignedPosition}º Lugar no final da fila.`
+        : 'Check-in Pontual confirmado! Aguarde o sorteio da Roleta às 09:01.',
       presenceId: savedPresence.id,
+      roletaName: savedPresence.roleta_name,
+      roletaEntryType: savedPresence.roleta_entry_type,
+      roletaPosition: savedPresence.roleta_position,
       methodUsed: methodUsed,
       distanceInMeters: Math.round(distanceCalculated),
     };
@@ -216,8 +302,9 @@ export class PresencesService {
     }
 
     const now = new Date();
-    const diffInMs = now.getTime() - activePresence.check_in_at.getTime();
-    const elapsedMinutes = Math.floor(diffInMs / 1000 / 60);
+    const countStart = activePresence.validation_starts_at || activePresence.check_in_at;
+    const diffInMs = now.getTime() - countStart.getTime();
+    const elapsedMinutes = Math.max(0, Math.floor(diffInMs / 1000 / 60));
 
     activePresence.check_out_at = now;
     activePresence.accumulated_minutes = elapsedMinutes;
@@ -235,13 +322,16 @@ export class PresencesService {
         : `Check-out realizado. O período foi invalidado por não atingir o mínimo de ${activePresence.minimum_period_minutes} minutos.`,
       presenceId: savedPresence.id,
       checkInAt: savedPresence.check_in_at,
-        checkOutAt: savedPresence.check_out_at,
-        nextConfirmationAt: null,
+      checkOutAt: savedPresence.check_out_at,
+      nextConfirmationAt: null,
       totalMinutes: savedPresence.accumulated_minutes,
     };
   }
 
   async getBrokerDashboardSummary(brokerId: string, tenantId: string) {
+    // Processa sorteios pendentes de forma preventiva antes de retornar os dados
+    await this.processRoletaDraws();
+
     const activePresence = await this.presenceRepository.findOne({
       where: { broker_id: brokerId, tenant_id: tenantId, status: 'online' },
     });
@@ -251,19 +341,74 @@ export class PresencesService {
     const activeRuleSet = activeBooth ? await this.getRuleSetForBooth(activeBooth) : undefined;
     const weeklyMetrics = await this.getCurrentWeekPeriodMetrics(brokerId, tenantId);
     const accumulatedPeriods = weeklyMetrics.weightedPeriods;
-    const eligibility = await this.checkWeekendEligibility(brokerId, tenantId, activeRuleSet, accumulatedPeriods);
+    const eligibility = await this.checkWeekendEligibility(brokerId, tenantId, activeRuleSet, accumulatedPeriods, activeBooth?.id);
     const activeMinutes = activePresence
-      ? Math.floor((Date.now() - activePresence.check_in_at.getTime()) / 1000 / 60)
+      ? Math.max(0, Math.floor((Date.now() - new Date(activePresence.validation_starts_at || activePresence.check_in_at).getTime()) / 1000 / 60))
       : 0;
     const minimumMinutes = activePresence?.minimum_period_minutes || activeRuleSet?.minimum_period_minutes || 120;
 
+    // Busca a fila completa da roleta no plantão onde o corretor está ativo
+    let boothQueue: any[] = [];
+    if (activePresence) {
+      const presencesInBooth = await this.presenceRepository.find({
+        where: {
+          booth_id: activePresence.booth_id,
+          tenant_id: tenantId,
+          status: 'online',
+          roleta_name: activePresence.roleta_name || undefined,
+        },
+        relations: { broker: true },
+        order: { roleta_position: 'ASC' },
+      });
+
+      boothQueue = presencesInBooth.map((p) => ({
+        brokerId: p.broker_id,
+        nomeGuerra: p.broker?.nome_guerra || 'Corretor',
+        roletaPosition: p.roleta_position,
+        roletaEntryType: p.roleta_entry_type,
+        minutesActive: Math.max(0, Math.floor((Date.now() - new Date(p.validation_starts_at || p.check_in_at).getTime()) / 1000 / 60)),
+        isCurrentBroker: p.broker_id === brokerId,
+      }));
+    }
+
+    // Busca todos os plantões publicados da construtora para detalhar as roletas por estande
+    const booths = await this.boothRepository.find({
+      where: { tenant_id: tenantId, lifecycle_status: 'published' },
+      order: { name: 'ASC' },
+    });
+
+    const boothsEligibility = await Promise.all(
+      booths.map(async (booth) => {
+        const ruleSet = await this.getRuleSetForBooth(booth);
+        const boothMetrics = await this.getCurrentWeekPeriodMetrics(brokerId, tenantId, booth.id);
+        const satReq = ruleSet.saturday_required_periods ?? 5;
+        const sunReq = ruleSet.sunday_required_periods ?? 6;
+        const satEligible = ruleSet.weekend_enabled !== false && boothMetrics.validPeriods >= satReq;
+        const sunEligible = ruleSet.weekend_enabled !== false && boothMetrics.validPeriods >= sunReq;
+
+        return {
+          boothId: booth.id,
+          boothName: booth.name,
+          validRoletasThisWeek: boothMetrics.validPeriods,
+          saturdayRequired: satReq,
+          sundayRequired: sunReq,
+          saturdayEligible: satEligible,
+          sundayEligible: sunEligible,
+          missingSaturday: Math.max(0, satReq - boothMetrics.validPeriods),
+          missingSunday: Math.max(0, sunReq - boothMetrics.validPeriods),
+          weekendEnabled: ruleSet.weekend_enabled !== false,
+        };
+      }),
+    );
+
     return {
-      week: 'Segunda a sexta-feira',
+      week: 'Segunda-feira a Domingo',
       accumulatedPeriods,
       validPeriods: weeklyMetrics.validPeriods,
       weightedPeriods: weeklyMetrics.weightedPeriods,
       invalidatedPeriods: weeklyMetrics.invalidatedPeriods,
       weekendEligibility: eligibility,
+      boothsEligibility,
       minimumMinutesPerPeriod: minimumMinutes,
       weekStart: weeklyMetrics.startOfWeek.toISOString(),
       weekEnd: weeklyMetrics.endOfFriday.toISOString(),
@@ -273,11 +418,96 @@ export class PresencesService {
             activeMinutes,
             minimumMinutes,
             minimumReached: activeMinutes >= minimumMinutes,
+            roletaName: activePresence.roleta_name,
+            roletaEntryType: activePresence.roleta_entry_type,
+            roletaPosition: activePresence.roleta_position,
+            waitingDraw: activePresence.roleta_entry_type === 'pontual' && !activePresence.roleta_position,
+            boothQueue,
             lastConfirmedAt: activePresence.last_confirmed_at,
             nextConfirmationAt: activePresence.next_confirmation_at,
             confirmationToleranceMinutes: activeRuleSet ? this.getConfirmationToleranceMinutes(activeRuleSet) : 5,
           }
         : null,
+    };
+  }
+
+  // Consulta consolidada de elegibilidade de fim de semana para a Gerência/Diretoria
+  async getTeamWeekendEligibility(actor: { sub: string; role: string }, tenantId: string) {
+    const isManager = actor.role === 'gerencia_level_2';
+    const userRepo = this.presenceRepository.manager.getRepository(User);
+    const brokers = await userRepo.find({
+      where: isManager
+        ? { tenant_id: tenantId, role: 'corretor_level_3', manager_id: actor.sub, status: 'active', removed_at: IsNull() }
+        : { tenant_id: tenantId, role: 'corretor_level_3', status: 'active', removed_at: IsNull() },
+      order: { name: 'ASC' },
+    });
+
+    const booths = await this.boothRepository.find({
+      where: { tenant_id: tenantId, lifecycle_status: 'published' },
+      order: { name: 'ASC' },
+    });
+
+    const boothRuleSets = new Map<string, BoothRuleSet>();
+    for (const booth of booths) {
+      boothRuleSets.set(booth.id, await this.getRuleSetForBooth(booth));
+    }
+
+    let saturdayEligibleCount = 0;
+    let sundayEligibleCount = 0;
+
+    const members = await Promise.all(
+      brokers.map(async (broker) => {
+        let isEligibleSaturdayAnyBooth = false;
+        let isEligibleSundayAnyBooth = false;
+
+        const boothsStatus = await Promise.all(
+          booths.map(async (booth) => {
+            const ruleSet = boothRuleSets.get(booth.id)!;
+            const metrics = await this.getCurrentWeekPeriodMetrics(broker.id, tenantId, booth.id);
+            const satReq = ruleSet.saturday_required_periods ?? 5;
+            const sunReq = ruleSet.sunday_required_periods ?? 6;
+            const satEligible = ruleSet.weekend_enabled !== false && metrics.validPeriods >= satReq;
+            const sunEligible = ruleSet.weekend_enabled !== false && metrics.validPeriods >= sunReq;
+
+            if (satEligible) isEligibleSaturdayAnyBooth = true;
+            if (sunEligible) isEligibleSundayAnyBooth = true;
+
+            return {
+              boothId: booth.id,
+              boothName: booth.name,
+              validRoletasThisWeek: metrics.validPeriods,
+              saturdayRequired: satReq,
+              sundayRequired: sunReq,
+              saturdayEligible: satEligible,
+              sundayEligible: sunEligible,
+              missingSaturday: Math.max(0, satReq - metrics.validPeriods),
+              missingSunday: Math.max(0, sunReq - metrics.validPeriods),
+            };
+          }),
+        );
+
+        if (isEligibleSaturdayAnyBooth) saturdayEligibleCount += 1;
+        if (isEligibleSundayAnyBooth) sundayEligibleCount += 1;
+
+        return {
+          brokerId: broker.id,
+          name: broker.name,
+          nomeGuerra: broker.nome_guerra,
+          creci: broker.creci,
+          managerId: broker.manager_id,
+          isEligibleSaturday: isEligibleSaturdayAnyBooth,
+          isEligibleSunday: isEligibleSundayAnyBooth,
+          boothsStatus,
+        };
+      }),
+    );
+
+    return {
+      totalTeamBrokers: brokers.length,
+      saturdayEligibleCount,
+      sundayEligibleCount,
+      inProgressCount: Math.max(0, brokers.length - saturdayEligibleCount),
+      members,
     };
   }
 
@@ -403,7 +633,100 @@ export class PresencesService {
     }
   }
 
-  // 6. Motor interno de verificação: executa a cada 5 minutos, sem suspender antes da janela configurada.
+  // 6. Motor interno de sorteio automático da Roleta: executa a cada minuto
+  @Cron(CronExpression.EVERY_MINUTE)
+  async handleRoletaDrawCron() {
+    await this.processRoletaDraws();
+  }
+
+  // Realiza o sorteio aleatório da Roleta para todos os plantões no minuto exato configurado (ex: 09:01, 14:01)
+  async processRoletaDraws() {
+    const booths = await this.boothRepository.find({
+      where: { lifecycle_status: 'published' },
+    });
+
+    const now = new Date();
+    const dayOfWeek = now.getDay();
+    const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+
+    for (const booth of booths) {
+      const ruleSet = await this.getRuleSetForBooth(booth);
+      const roletaTimes = isWeekend
+        ? [{ name: 'Roleta Fim de Semana', time: ruleSet.roleta_weekend_time || '09:00' }]
+        : [
+            { name: 'Roleta 1 (Manhã)', time: ruleSet.roleta_1_time || '09:00' },
+            { name: 'Roleta 2 (Tarde)', time: ruleSet.roleta_2_time || '14:00' },
+            ...(ruleSet.roleta_3_time ? [{ name: 'Roleta 3 (Noite)', time: ruleSet.roleta_3_time }] : []),
+          ];
+
+      for (const r of roletaTimes) {
+        const [hours, minutes] = r.time.split(':').map(Number);
+        const roletaStartDate = new Date(now);
+        roletaStartDate.setHours(hours, minutes, 0, 0);
+
+        const drawDate = new Date(roletaStartDate.getTime() + 1 * 60 * 1000); // 09:01
+
+        // Se já passou do horário do sorteio (09:01)
+        if (now.getTime() >= drawDate.getTime()) {
+          const unplacedPresences = await this.presenceRepository.find({
+            where: {
+              booth_id: booth.id,
+              tenant_id: booth.tenant_id,
+              status: 'online',
+              roleta_name: r.name,
+              roleta_entry_type: 'pontual',
+              roleta_position: IsNull(),
+            },
+            relations: { broker: true },
+          });
+
+          if (unplacedPresences.length > 0) {
+            // Embaralha aleatoriamente (Sorteio da Roleta)
+            const shuffled = [...unplacedPresences].sort(() => Math.random() - 0.5);
+            
+            const existingPresences = await this.presenceRepository.find({
+              where: {
+                booth_id: booth.id,
+                tenant_id: booth.tenant_id,
+                status: 'online',
+                roleta_name: r.name,
+              },
+            });
+            const maxExistingPos = existingPresences.reduce((max, p) => Math.max(max, p.roleta_position || 0), 0);
+
+            for (let i = 0; i < shuffled.length; i++) {
+              const presence = shuffled[i];
+              presence.roleta_position = maxExistingPos + i + 1;
+              await this.presenceRepository.save(presence);
+
+              // Dispara notificação push para o corretor com a posição sorteada
+              void this.notificationsService.sendToUser(
+                presence.broker_id,
+                presence.tenant_id,
+                `🎰 Sorteio da Roleta Realizado!`,
+                `Parabéns, ${presence.broker?.nome_guerra || 'corretor'}! Você tirou o ${presence.roleta_position}º Lugar na fila de atendimento do plantão ${booth.name}.`,
+                { type: 'roleta_drawn', presenceId: presence.id, position: presence.roleta_position, boothId: booth.id },
+              );
+            }
+
+            this.realtimeService.publish({
+              eventType: 'roleta.drawn',
+              tenantId: booth.tenant_id,
+              aggregateId: booth.id,
+              payload: {
+                boothId: booth.id,
+                roletaName: r.name,
+                drawnCount: shuffled.length,
+              },
+            });
+            console.log(`[ROLETA] Sorteio realizado no plantão '${booth.name}' (${r.name}): ${shuffled.length} corretor(es) sorteado(s).`);
+          }
+        }
+      }
+    }
+  }
+
+  // 7. Motor interno de verificação: executa a cada 5 minutos, sem suspender antes da janela configurada.
   @Cron(CronExpression.EVERY_5_MINUTES)
   async handleDeadMansSwitchCron() {
     console.log('[CRON] Iniciando verificação de permanência (Dead Man\'s Switch)...');
@@ -492,8 +815,8 @@ export class PresencesService {
     };
   }
 
-  // 8. Retorna métricas explícitas de períodos da semana atual.
-  private async getCurrentWeekPeriodMetrics(brokerId: string, tenantId: string) {
+  // 8. Retorna métricas explícitas de períodos da semana atual (Segunda 00:00 a Sexta 23:59).
+  private async getCurrentWeekPeriodMetrics(brokerId: string, tenantId: string, boothId?: string) {
     const now = new Date();
     const currentDay = now.getDay(); // 0 = Domingo, 1 = Segunda, ..., 6 = Sábado
     
@@ -508,13 +831,18 @@ export class PresencesService {
     endOfFriday.setDate(startOfWeek.getDate() + 4); // Segunda + 4 dias = Sexta
     endOfFriday.setHours(23, 59, 59, 999);
 
-    // Busca todas as presenças concluídas ("completed") no intervalo de segunda a sexta desta semana
-    const presences = await this.presenceRepository.createQueryBuilder('presence')
+    // Busca todas as presenças concluídas no intervalo de segunda a sexta desta semana
+    const query = this.presenceRepository.createQueryBuilder('presence')
       .where('presence.broker_id = :brokerId', { brokerId })
       .andWhere('presence.tenant_id = :tenantId', { tenantId })
       .andWhere('presence.status IN (:...statuses)', { statuses: ['completed', 'invalidated'] })
-      .andWhere('presence.check_in_at BETWEEN :start AND :end', { start: startOfWeek, end: endOfFriday })
-      .getMany();
+      .andWhere('presence.check_in_at BETWEEN :start AND :end', { start: startOfWeek, end: endOfFriday });
+
+    if (boothId) {
+      query.andWhere('presence.booth_id = :boothId', { boothId });
+    }
+
+    const presences = await query.getMany();
 
     const validPresences = presences.filter(
       (presence) => presence.status === 'completed' &&
@@ -535,22 +863,23 @@ export class PresencesService {
     };
   }
 
-  private async getAccumulatedPeriodsForCurrentWeek(brokerId: string, tenantId: string): Promise<number> {
-    const metrics = await this.getCurrentWeekPeriodMetrics(brokerId, tenantId);
-    return metrics.weightedPeriods;
+  private async getAccumulatedPeriodsForCurrentWeek(brokerId: string, tenantId: string, boothId?: string): Promise<number> {
+    const metrics = await this.getCurrentWeekPeriodMetrics(brokerId, tenantId, boothId);
+    return metrics.validPeriods;
   }
 
-  // 9. Valida a elegibilidade do corretor para check-in de fim de semana [9]
+  // 9. Valida a elegibilidade do corretor para check-in de fim de semana (por plantão) [9]
   private async checkWeekendEligibility(
     brokerId: string,
     tenantId: string,
     ruleSet?: BoothRuleSet,
     accumulatedOverride?: number,
-    ): Promise<{ eligible: boolean; checkInAllowedToday: boolean; enabled: boolean; accumulated: number; required: number }> {
+    boothId?: string,
+  ): Promise<{ eligible: boolean; checkInAllowedToday: boolean; enabled: boolean; accumulated: number; required: number }> {
     const now = new Date();
     const dayOfWeek = now.getDay(); // 0 = Domingo, 6 = Sábado
-    const accumulated = accumulatedOverride ?? await this.getAccumulatedPeriodsForCurrentWeek(brokerId, tenantId);
-    const enabled = ruleSet?.weekend_enabled === true;
+    const accumulated = accumulatedOverride !== undefined ? accumulatedOverride : await this.getAccumulatedPeriodsForCurrentWeek(brokerId, tenantId, boothId);
+    const enabled = ruleSet?.weekend_enabled !== false;
     const saturdayRequired = ruleSet?.saturday_required_periods ?? 5;
     const sundayRequired = ruleSet?.sunday_required_periods ?? 6;
     const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;

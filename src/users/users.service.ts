@@ -199,7 +199,8 @@ export class UsersService {
       afterData: { invitedRole: savedLink.invited_role, managerId: savedLink.manager_id, validUntil: savedLink.valid_until },
       reason: 'Convite hierárquico criado',
     });
-    return { token: savedLink.token, invited_role: savedLink.invited_role, manager_id: savedLink.manager_id, valid_until: savedLink.valid_until, onboarding_url: `https://abiatar.bitimob.com.br/cadastro/${savedLink.token}` };
+    const baseUrl = (process.env.FRONTEND_URL || 'https://abiatar.bitimob.com.br').replace(/\/$/, '');
+    return { token: savedLink.token, invited_role: savedLink.invited_role, manager_id: savedLink.manager_id, valid_until: savedLink.valid_until, onboarding_url: `${baseUrl}/cadastro/${savedLink.token}` };
   }
 
   async registerManager(dto: { token: string; name: string; nomeGuerra: string; email: string; passwordHash: string }) {
@@ -611,18 +612,22 @@ export class UsersService {
   }
   // Adicione este método dentro de UsersService, em src/users/users.service.ts
 
-   // 8. Retorna a Fila de Leads ativa em tempo real de todos os corretores do tenant [6, 10]
-  async getRealTimeLeadsQueue(tenantId: string) {
-    // A. Busca todos os corretores (Nível 3) cadastrados e inativados da construtora [10]
+   // 8. Retorna a Fila de Leads / Roleta ativa em tempo real (com isolamento por equipe de gerência) [6, 10]
+  async getRealTimeLeadsQueue(tenantId: string, actor?: { sub: string; role: string }) {
+    const isManager = actor?.role === 'gerencia_level_2';
+    
+    // A. Busca os corretores (Nível 3) do tenant ou restrito à equipe do gerente logado
     const brokers = await this.userRepository.find({
-      where: { tenant_id: tenantId, role: 'corretor_level_3' },
+      where: isManager
+        ? { tenant_id: tenantId, role: 'corretor_level_3', manager_id: actor!.sub, removed_at: IsNull() }
+        : { tenant_id: tenantId, role: 'corretor_level_3', removed_at: IsNull() },
       order: { name: 'ASC' },
     });
 
-    const queue: any[] = []; // <-- ADICIONADO "any[]" para aceitar inserções em modo estrito
+    const queue: any[] = [];
 
     for (const broker of brokers) {
-      // B. Busca se o corretor possui um gerente associado para exibir o nome de guerra dele [10]
+      // B. Busca o gerente associado para exibir o nome de guerra
       let managerName = 'Sem Gerente';
       if (broker.manager_id) {
         const manager = await this.userRepository.findOne({ where: { id: broker.manager_id } });
@@ -631,32 +636,49 @@ export class UsersService {
         }
       }
 
-      // C. Busca se o corretor está fisicamente presente em algum plantão online neste segundo [8]
+      // C. Busca a presença ativa ("online") deste corretor
       const activePresence = await this.userRepository.manager.getRepository('presences').findOne({
         where: { broker_id: broker.id, tenant_id: tenantId, status: 'online' },
-        relations: { booth: true }, // <-- AJUSTADO PARA FORMATO OBJETO DO TYPEORM 0.3+
+        relations: { booth: true },
       }) as any;
 
       const isPresent = !!activePresence;
       const isOutOfCarencia = broker.status === 'active'; // Ativo = fora da carência [10]
 
-      // D. A REGRA DE OURO: Só está habilitado se estiver presente E fora da carência [8, 10]
+      // D. REGRA DE OURO: Habilitado se presente + fora de carência + leads não pausados + não removido
       const isHabilitado = isPresent && isOutOfCarencia && !broker.leads_paused && !broker.removed_at;
+
+      const minutesActive = activePresence
+        ? Math.max(0, Math.floor((Date.now() - new Date(activePresence.validation_starts_at || activePresence.check_in_at).getTime()) / 1000 / 60))
+        : 0;
 
       queue.push({
         brokerId: broker.id,
         nomeGuerra: broker.nome_guerra,
         managerName: managerName,
-        statusPresenca: isPresent ? `🟢 ONLINE (${activePresence.booth.name})` : '🔴 OFFLINE',
+        statusPresenca: isPresent ? `🟢 ONLINE (${activePresence.booth?.name || 'Plantão'})` : '🔴 OFFLINE',
         statusCarencia: broker.removed_at ? '⚫ REMOVIDO' : (broker.status === 'grace_period' ? '🟡 EM CARÊNCIA' : (isOutOfCarencia ? '🟢 ATIVO' : '🔴 INATIVO')),
         leadsPaused: broker.leads_paused,
         isHabilitado: isHabilitado ? '🟢 HABILITADO' : '🔴 BLOQUEADO',
+        roletaName: activePresence?.roleta_name || null,
+        roletaEntryType: activePresence?.roleta_entry_type || null,
+        roletaPosition: activePresence?.roleta_position || null,
+        minutesActive,
+        minimumRequiredMinutes: activePresence?.minimum_period_minutes || 120,
         dataAtualizacao: new Date().toLocaleDateString('pt-BR'),
       });
     }
 
+    // Ordenação da fila de leads: primeiro os habilitados por posição na roleta, depois pontualidade, depois nome
+    queue.sort((a, b) => {
+      if (a.isHabilitado === '🟢 HABILITADO' && b.isHabilitado !== '🟢 HABILITADO') return -1;
+      if (a.isHabilitado !== '🟢 HABILITADO' && b.isHabilitado === '🟢 HABILITADO') return 1;
+      if (a.roletaPosition && b.roletaPosition) return a.roletaPosition - b.roletaPosition;
+      return a.nomeGuerra.localeCompare(b.nomeGuerra);
+    });
+
     return {
-      message: 'Fila de distribuição de leads em tempo real carregada.',
+      message: 'Fila de distribuição de leads da Roleta carregada.',
       queue,
     };
   }

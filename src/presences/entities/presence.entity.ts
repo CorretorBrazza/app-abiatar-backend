@@ -65,6 +65,18 @@ export class Presence {
   @Column({ default: 0 })
   accumulated_minutes: number; // Minutos validados acumulados neste turno
 
+  @Column({ type: 'varchar', length: 50, nullable: true })
+  roleta_name: string | null;
+
+  @Column({ type: 'varchar', length: 30, nullable: true })
+  roleta_entry_type: string | null; // 'pontual' | 'pos_barra'
+
+  @Column({ type: 'int', nullable: true })
+  roleta_position: number | null; // Ordem sorteada ou posição no pós-barra
+
+  @Column({ type: 'timestamp', nullable: true })
+  validation_starts_at: Date | null; // Horário a partir do qual contam os 120 min
+
   @Column({
     type: 'enum',
     enum: ['online', 'paused', 'absent', 'completed', 'invalidated'],

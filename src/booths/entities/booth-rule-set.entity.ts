@@ -48,6 +48,24 @@ export class BoothRuleSet {
   @Column({ type: 'int', default: 6 })
   sunday_required_periods: number;
 
+  @Column({ type: 'time', nullable: true, default: '09:00' })
+  roleta_1_time: string | null;
+
+  @Column({ type: 'time', nullable: true, default: '14:00' })
+  roleta_2_time: string | null;
+
+  @Column({ type: 'time', nullable: true })
+  roleta_3_time: string | null;
+
+  @Column({ type: 'time', nullable: true, default: '09:00' })
+  roleta_weekend_time: string | null;
+
+  @Column({ type: 'int', default: 30 })
+  checkin_early_minutes: number;
+
+  @Column({ type: 'int', default: 30 })
+  pos_barra_minutes: number;
+
   @Column({ type: 'time', nullable: true })
   opening_time: string | null;
 
@@ -63,7 +81,7 @@ export class BoothRuleSet {
   @Column({ type: 'int', default: 30 })
   ping_interval_minutes: number;
 
-  @Column({ type: 'int', default: 30 })
+  @Column({ type: 'int', default: 5 })
   ping_response_deadline_minutes: number;
 
   @Column({ type: 'int', default: 2 })

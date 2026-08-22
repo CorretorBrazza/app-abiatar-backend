@@ -16,6 +16,24 @@ export class UpdateBoothRulesDto {
   sundayRequiredPeriods?: number;
 
   @IsString() @IsOptional()
+  roleta1Time?: string | null;
+
+  @IsString() @IsOptional()
+  roleta2Time?: string | null;
+
+  @IsString() @IsOptional()
+  roleta3Time?: string | null;
+
+  @IsString() @IsOptional()
+  roletaWeekendTime?: string | null;
+
+  @IsInt() @Min(0) @Max(240) @IsOptional()
+  checkinEarlyMinutes?: number;
+
+  @IsInt() @Min(0) @Max(240) @IsOptional()
+  posBarraMinutes?: number;
+
+  @IsString() @IsOptional()
   openingTime?: string | null;
 
   @IsString() @IsOptional()

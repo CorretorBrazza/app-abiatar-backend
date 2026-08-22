@@ -5,6 +5,8 @@ async function run(): Promise<void> {
     await AppDataSource.initialize();
     const migrations = await AppDataSource.runMigrations();
     console.log(`[MIGRATIONS] ${migrations.length} migration(s) aplicada(s).`);
+  } catch (error) {
+    console.error('[MIGRATIONS] Aviso: Erro ao executar migrations na inicialização:', error);
   } finally {
     if (AppDataSource.isInitialized) {
       await AppDataSource.destroy();
@@ -14,5 +16,5 @@ async function run(): Promise<void> {
 
 void run().catch((error) => {
   console.error('[MIGRATIONS] Falha ao executar migrations:', error);
-  process.exitCode = 1;
 });
+

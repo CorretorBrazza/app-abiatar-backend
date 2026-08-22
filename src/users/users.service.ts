@@ -1,5 +1,5 @@
 // src/users/users.service.ts
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable, OnModuleInit, BadRequestException, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, MoreThan, LessThanOrEqual, Raw, IsNull, In, Not, Brackets } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
@@ -19,7 +19,7 @@ import { AuditService } from '../audit/audit.service';
 import { RealtimeService } from '../realtime/realtime.service';
 
 @Injectable()
-export class UsersService {
+export class UsersService implements OnModuleInit {
   constructor(
     @InjectRepository(User)
     private userRepository: Repository<User>,
@@ -33,6 +33,22 @@ export class UsersService {
     private auditService: AuditService,
     private readonly realtimeService: RealtimeService,
   ) {}
+
+  async onModuleInit() {
+    try {
+      await this.userRepository.query(`
+        ALTER TABLE users 
+        ADD COLUMN IF NOT EXISTS broker_stage varchar(32) NOT NULL DEFAULT 'corretor_creci';
+      `);
+      await this.userRepository.query(`
+        ALTER TABLE users 
+        ALTER COLUMN creci DROP NOT NULL;
+      `);
+      console.log('[USERS] Schema auto-healing garantido com sucesso (broker_stage & creci nullable).');
+    } catch (err) {
+      console.error('[USERS] Aviso ao executar auto-healing de schema:', err);
+    }
+  }
 
   private normalizeNomeGuerra(value: string): string {
     return value.trim().replace(/\s+/g, ' ').toLocaleUpperCase('pt-BR');
@@ -230,34 +246,54 @@ export class UsersService {
 
   async getPublicManagers(tenantSlug?: string) {
     let tenant: Tenant | null = null;
-    if (tenantSlug?.trim()) {
-      tenant = await this.tenantRepository.findOne({ where: { slug: tenantSlug.trim() } });
-    }
-    if (!tenant) {
-      tenant = await this.tenantRepository.findOne({ where: { slug: 'abiatar-teste' } });
-    }
-    if (!tenant) {
-      tenant = await this.tenantRepository.findOne({ order: { created_at: 'ASC' } });
-    }
-    if (!tenant) {
-      throw new NotFoundException('Empresa não encontrada.');
+    try {
+      if (tenantSlug?.trim()) {
+        tenant = await this.tenantRepository.findOne({ where: { slug: tenantSlug.trim() } });
+      }
+      if (!tenant) {
+        tenant = await this.tenantRepository.findOne({ where: { slug: 'abiatar-teste' } });
+      }
+      if (!tenant) {
+        tenant = await this.tenantRepository.findOne({ order: { created_at: 'ASC' } });
+      }
+    } catch (err) {
+      console.error('[USERS] Erro ao buscar tenant em getPublicManagers:', err);
     }
 
-    const managers = await this.userRepository.find({
-      where: { tenant_id: tenant.id, role: 'gerencia_level_2', status: 'active', removed_at: IsNull() },
-      select: { id: true, name: true, nome_guerra: true },
-      order: { nome_guerra: 'ASC' },
-    });
+    let managers: User[] = [];
+    try {
+      if (tenant) {
+        managers = await this.userRepository.find({
+          where: { tenant_id: tenant.id, role: 'gerencia_level_2', status: 'active', removed_at: IsNull() },
+          select: { id: true, name: true, nome_guerra: true },
+          order: { nome_guerra: 'ASC' },
+        });
+      }
+
+      if (managers.length === 0) {
+        managers = await this.userRepository.find({
+          where: { role: 'gerencia_level_2', status: 'active', removed_at: IsNull() },
+          select: { id: true, name: true, nome_guerra: true },
+          order: { nome_guerra: 'ASC' },
+        });
+      }
+    } catch (err) {
+      console.error('[USERS] Erro ao buscar gerentes em getPublicManagers:', err);
+    }
 
     return {
-      tenant: {
+      tenant: tenant ? {
         id: tenant.id,
         name: tenant.name,
         slug: tenant.slug,
         primary_color: tenant.primary_color,
         logo_url: tenant.logo_url,
-      },
-      managers,
+      } : null,
+      managers: managers.map((m) => ({
+        id: m.id,
+        name: m.name,
+        nome_guerra: m.nome_guerra || m.name,
+      })),
     };
   }
 

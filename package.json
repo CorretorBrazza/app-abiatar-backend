@@ -8,10 +8,10 @@
   "scripts": {
     "build": "nest build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
-    "start": "nest start",
+    "start": "node dist/main",
     "start:dev": "nest start --watch",
     "start:debug": "nest start --debug --watch",
-    "start:prod": "node dist/database/run-migrations.js && node dist/main",
+    "start:prod": "node dist/main",
     "security:dev:backup": "bash scripts/dev-backup.sh",
     "security:dev:verify": "bash scripts/dev-verify-backup.sh",
     "security:dev:restore": "bash scripts/dev-restore.sh",

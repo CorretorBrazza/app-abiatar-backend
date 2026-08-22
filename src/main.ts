@@ -26,11 +26,11 @@ async function bootstrap() {
       transform: true,
     }),
   );
-  const allowedOrigins = (process.env.CORS_ORIGINS || 'http://localhost:8081,http://localhost:19006')
-    .split(',')
-    .map((origin) => origin.trim())
-    .filter(Boolean);
-  app.enableCors({ origin: allowedOrigins, credentials: false });
+  app.enableCors({
+    origin: true,
+    methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
+    credentials: true,
+  });
   await app.listen(Number(process.env.PORT) || 3000, '0.0.0.0');
 }
 bootstrap();

@@ -112,6 +112,63 @@ export class PresencesController {
     return this.presencesService.getBoothDemandHeatmap(boothId, tenantId);
   }
 
+  @Get('reports/realtime')
+  @UseGuards(JwtAuthGuard)
+  async getRealtimeReport(
+    @CurrentUser() currentUser: { role: string },
+    @TenantId() tenantId: string,
+  ) {
+    if (!['diretoria_level_1', 'gerencia_level_2', 'platform_admin_level_0'].includes(currentUser.role)) {
+      throw new ForbiddenException('Acesso restrito à Diretoria e Gerência.');
+    }
+    return this.presencesService.getRealtimeExecutiveReport(tenantId);
+  }
+
+  @Get('reports/brokers')
+  @UseGuards(JwtAuthGuard)
+  async getBrokersReport(
+    @CurrentUser() currentUser: { role: string; sub: string },
+    @TenantId() tenantId: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Query('boothId') boothId?: string,
+    @Query('managerId') managerId?: string,
+  ) {
+    if (!['diretoria_level_1', 'gerencia_level_2', 'platform_admin_level_0'].includes(currentUser.role)) {
+      throw new ForbiddenException('Acesso restrito à Diretoria e Gerência.');
+    }
+    const effectiveManagerId = currentUser.role === 'gerencia_level_2' ? currentUser.sub : managerId;
+    return this.presencesService.getBrokersExecutiveReport(tenantId, startDate, endDate, boothId, effectiveManagerId);
+  }
+
+  @Get('reports/managers')
+  @UseGuards(JwtAuthGuard)
+  async getManagersReport(
+    @CurrentUser() currentUser: { role: string },
+    @TenantId() tenantId: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+  ) {
+    if (!['diretoria_level_1', 'platform_admin_level_0'].includes(currentUser.role)) {
+      throw new ForbiddenException('Acesso restrito à Diretoria.');
+    }
+    return this.presencesService.getManagersExecutiveReport(tenantId, startDate, endDate);
+  }
+
+  @Get('reports/booths')
+  @UseGuards(JwtAuthGuard)
+  async getBoothsReport(
+    @CurrentUser() currentUser: { role: string },
+    @TenantId() tenantId: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+  ) {
+    if (!['diretoria_level_1', 'platform_admin_level_0'].includes(currentUser.role)) {
+      throw new ForbiddenException('Acesso restrito à Diretoria.');
+    }
+    return this.presencesService.getBoothsExecutiveReport(tenantId, startDate, endDate);
+  }
+
   @Post('force-check-in')
   @UseGuards(JwtAuthGuard)
   async forceCheckIn(

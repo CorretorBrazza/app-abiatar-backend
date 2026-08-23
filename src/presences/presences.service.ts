@@ -1,7 +1,6 @@
-// src/presences/presences.service.ts
 import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, IsNull } from 'typeorm';
+import { Repository, IsNull, Between } from 'typeorm';
 import { Cron, CronExpression } from '@nestjs/schedule'; // Importa o decorador de tarefas agendadas
 
 import { Presence } from './entities/presence.entity';
@@ -1134,6 +1133,406 @@ export class PresencesService {
         roletaName: saved.roleta_name,
         checkInAt: saved.check_in_at,
       },
+    };
+  }
+
+  // 13. RELATÓRIO EXECUTIVO EM TEMPO REAL: Torre de Controle da Diretoria
+  async getRealtimeExecutiveReport(tenantId: string) {
+    const booths = await this.boothRepository.find({
+      where: { tenant_id: tenantId, lifecycle_status: 'published' },
+      order: { name: 'ASC' },
+    });
+
+    const activePresences = await this.presenceRepository.find({
+      where: { tenant_id: tenantId, status: 'online' },
+      relations: { broker: true, booth: true },
+      order: { roleta_position: 'ASC', check_in_at: 'ASC' },
+    });
+
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+    const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+
+    const todayPresences = await this.presenceRepository.find({
+      where: {
+        tenant_id: tenantId,
+        check_in_at: Between(todayStart, todayEnd),
+      },
+    });
+
+    const presencesByBooth = new Map<string, typeof activePresences>();
+    for (const p of activePresences) {
+      const list = presencesByBooth.get(p.booth_id) || [];
+      list.push(p);
+      presencesByBooth.set(p.booth_id, list);
+    }
+
+    const boothsReport = await Promise.all(
+      booths.map(async (booth) => {
+        const ruleSet = await this.getRuleSetForBooth(booth);
+        const onlineInBooth = presencesByBooth.get(booth.id) || [];
+        const minRequired = ruleSet.minimum_brokers_required ?? 2;
+        const isUnderstaffed = onlineInBooth.length < minRequired;
+
+        const onlineBrokers = onlineInBooth.map((p) => {
+          const countStart = p.validation_starts_at || p.check_in_at;
+          const minutesActive = Math.max(0, Math.floor((now.getTime() - countStart.getTime()) / 1000 / 60));
+          return {
+            presenceId: p.id,
+            brokerId: p.broker_id,
+            nomeGuerra: p.broker?.nome_guerra || 'Corretor',
+            name: p.broker?.name || 'Corretor',
+            brokerStage: p.broker?.broker_stage || 'corretor_creci',
+            creci: p.broker?.creci || null,
+            roletaPosition: p.roleta_position,
+            roletaName: p.roleta_name,
+            roletaEntryType: p.roleta_entry_type,
+            checkInAt: p.check_in_at,
+            minutesActive,
+            hoursFormatted: `${Math.floor(minutesActive / 60)}h ${minutesActive % 60}m`,
+            lastConfirmedAt: p.last_confirmed_at,
+          };
+        });
+
+        return {
+          boothId: booth.id,
+          boothName: booth.name,
+          address: booth.address,
+          onlineCount: onlineInBooth.length,
+          minRequired,
+          isUnderstaffed,
+          hasBrokers: onlineInBooth.length > 0,
+          onlineBrokers,
+        };
+      }),
+    );
+
+    const activeBoothsCount = boothsReport.filter((b) => b.hasBrokers).length;
+    const emptyBoothsCount = boothsReport.filter((b) => !b.hasBrokers).length;
+    const understaffedBoothsCount = boothsReport.filter((b) => b.isUnderstaffed).length;
+    const totalTodayMinutes = todayPresences.reduce((acc, p) => acc + (p.accumulated_minutes || 0), 0);
+
+    return {
+      updatedAt: now.toISOString(),
+      totalBooths: booths.length,
+      activeBoothsCount,
+      emptyBoothsCount,
+      understaffedBoothsCount,
+      onlineBrokersCount: activePresences.length,
+      todayCheckinsCount: todayPresences.length,
+      todayTotalHoursFormatted: `${Math.floor(totalTodayMinutes / 60)}h ${totalTodayMinutes % 60}m`,
+      booths: boothsReport,
+    };
+  }
+
+  // 14. RELATÓRIO DE CORRETORES: Produtividade, Horas e Assiduidade
+  async getBrokersExecutiveReport(
+    tenantId: string,
+    startDateStr?: string,
+    endDateStr?: string,
+    boothId?: string,
+    managerId?: string,
+  ) {
+    const now = new Date();
+    let startDate: Date;
+    let endDate: Date;
+
+    if (startDateStr) {
+      const [y, m, d] = startDateStr.split('-').map(Number);
+      startDate = new Date(y, m - 1, d, 0, 0, 0, 0);
+    } else {
+      startDate = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+    }
+
+    if (endDateStr) {
+      const [y, m, d] = endDateStr.split('-').map(Number);
+      endDate = new Date(y, m - 1, d, 23, 59, 59, 999);
+    } else {
+      endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+    }
+
+    const userRepo = this.presenceRepository.manager.getRepository(User);
+    const whereBrokers: any = {
+      tenant_id: tenantId,
+      role: 'corretor_level_3',
+      removed_at: IsNull(),
+    };
+    if (managerId) {
+      whereBrokers.manager_id = managerId;
+    }
+
+    const brokers = await userRepo.find({
+      where: whereBrokers,
+      order: { name: 'ASC' },
+    });
+
+    const managers = await userRepo.find({
+      where: { tenant_id: tenantId, role: 'gerencia_level_2', removed_at: IsNull() },
+    });
+    const managerMap = new Map(managers.map((m) => [m.id, m.nome_guerra || m.name]));
+
+    const presencesQuery = this.presenceRepository.createQueryBuilder('p')
+      .where('p.tenant_id = :tenantId', { tenantId })
+      .andWhere('p.check_in_at BETWEEN :start AND :end', { start: startDate, end: endDate });
+
+    if (boothId) {
+      presencesQuery.andWhere('p.booth_id = :boothId', { boothId });
+    }
+
+    const presences = await presencesQuery.getMany();
+
+    const presencesByBroker = new Map<string, Presence[]>();
+    for (const p of presences) {
+      const list = presencesByBroker.get(p.broker_id) || [];
+      list.push(p);
+      presencesByBroker.set(p.broker_id, list);
+    }
+
+    const report = await Promise.all(
+      brokers.map(async (broker) => {
+        const brokerPresences = presencesByBroker.get(broker.id) || [];
+        const totalCheckIns = brokerPresences.length;
+        const completedCount = brokerPresences.filter((p) => p.status === 'completed').length;
+        const invalidatedCount = brokerPresences.filter((p) => p.status === 'invalidated').length;
+        const onlineCount = brokerPresences.filter((p) => p.status === 'online').length;
+        const pontualCount = brokerPresences.filter((p) => p.roleta_entry_type === 'pontual').length;
+        const posBarraCount = brokerPresences.filter((p) => p.roleta_entry_type === 'pos_barra').length;
+        const totalMinutes = brokerPresences.reduce((acc, p) => acc + (p.accumulated_minutes || 0), 0);
+        const hours = Math.floor(totalMinutes / 60);
+        const minutes = totalMinutes % 60;
+
+        const punctualityRate = totalCheckIns > 0 ? Math.round((pontualCount / totalCheckIns) * 100) : 100;
+        const validationRate = (completedCount + invalidatedCount) > 0
+          ? Math.round((completedCount / (completedCount + invalidatedCount)) * 100)
+          : 100;
+
+        const weeklyMetrics = await this.getCurrentWeekPeriodMetrics(broker.id, tenantId);
+        const weekendEligible = weeklyMetrics.validPeriods >= 5;
+
+        return {
+          brokerId: broker.id,
+          name: broker.name,
+          nomeGuerra: broker.nome_guerra || broker.name,
+          creci: broker.creci || null,
+          brokerStage: broker.broker_stage || 'corretor_creci',
+          managerId: broker.manager_id,
+          managerName: broker.manager_id ? (managerMap.get(broker.manager_id) || 'Sem Gerente') : 'Sem Gerente',
+          totalCheckIns,
+          completedCount,
+          invalidatedCount,
+          onlineCount,
+          pontualCount,
+          posBarraCount,
+          totalMinutes,
+          totalHoursFormatted: `${hours}h ${minutes}m`,
+          punctualityRate,
+          validationRate,
+          weekendEligible,
+          currentWeekValidRoletas: weeklyMetrics.validPeriods,
+        };
+      }),
+    );
+
+    return {
+      period: {
+        startDate: startDate.toISOString().split('T')[0],
+        endDate: endDate.toISOString().split('T')[0],
+      },
+      totalBrokers: brokers.length,
+      activeBrokersWithCheckins: report.filter((r) => r.totalCheckIns > 0).length,
+      brokers: report.sort((a, b) => b.totalCheckIns - a.totalCheckIns),
+    };
+  }
+
+  // 15. RELATÓRIO DE GERENTES: Ranking Comparativo de Equipes
+  async getManagersExecutiveReport(
+    tenantId: string,
+    startDateStr?: string,
+    endDateStr?: string,
+  ) {
+    const now = new Date();
+    let startDate: Date;
+    let endDate: Date;
+
+    if (startDateStr) {
+      const [y, m, d] = startDateStr.split('-').map(Number);
+      startDate = new Date(y, m - 1, d, 0, 0, 0, 0);
+    } else {
+      startDate = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+    }
+
+    if (endDateStr) {
+      const [y, m, d] = endDateStr.split('-').map(Number);
+      endDate = new Date(y, m - 1, d, 23, 59, 59, 999);
+    } else {
+      endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+    }
+
+    const userRepo = this.presenceRepository.manager.getRepository(User);
+    const managers = await userRepo.find({
+      where: { tenant_id: tenantId, role: 'gerencia_level_2', removed_at: IsNull() },
+      order: { name: 'ASC' },
+    });
+
+    const allBrokers = await userRepo.find({
+      where: { tenant_id: tenantId, role: 'corretor_level_3', removed_at: IsNull() },
+    });
+
+    const presences = await this.presenceRepository.find({
+      where: {
+        tenant_id: tenantId,
+        check_in_at: Between(startDate, endDate),
+      },
+    });
+
+    const presencesByBroker = new Map<string, Presence[]>();
+    for (const p of presences) {
+      const list = presencesByBroker.get(p.broker_id) || [];
+      list.push(p);
+      presencesByBroker.set(p.broker_id, list);
+    }
+
+    const report = await Promise.all(
+      managers.map(async (manager) => {
+        const team = allBrokers.filter((b) => b.manager_id === manager.id);
+        let teamTotalCheckIns = 0;
+        let teamTotalMinutes = 0;
+        let teamWeekendEligibleCount = 0;
+
+        const brokerRanks = await Promise.all(
+          team.map(async (b) => {
+            const bPresences = presencesByBroker.get(b.id) || [];
+            const checkIns = bPresences.length;
+            const minutes = bPresences.reduce((acc, p) => acc + (p.accumulated_minutes || 0), 0);
+            teamTotalCheckIns += checkIns;
+            teamTotalMinutes += minutes;
+
+            const weeklyMetrics = await this.getCurrentWeekPeriodMetrics(b.id, tenantId);
+            if (weeklyMetrics.validPeriods >= 5) {
+              teamWeekendEligibleCount += 1;
+            }
+
+            return {
+              brokerId: b.id,
+              nomeGuerra: b.nome_guerra || b.name,
+              checkIns,
+              hoursFormatted: `${Math.floor(minutes / 60)}h ${minutes % 60}m`,
+            };
+          }),
+        );
+
+        const avgPerBroker = team.length > 0 ? (teamTotalCheckIns / team.length).toFixed(1) : '0.0';
+        const teamHours = Math.floor(teamTotalMinutes / 60);
+        const teamMins = teamTotalMinutes % 60;
+
+        return {
+          managerId: manager.id,
+          managerName: manager.name,
+          nomeGuerra: manager.nome_guerra || manager.name,
+          email: manager.email,
+          teamSize: team.length,
+          teamTotalCheckIns,
+          teamTotalHoursFormatted: `${teamHours}h ${teamMins}m`,
+          averageCheckInsPerBroker: Number(avgPerBroker),
+          teamWeekendEligibleCount,
+          topBrokers: brokerRanks.sort((a, b) => b.checkIns - a.checkIns).slice(0, 3),
+        };
+      }),
+    );
+
+    return {
+      period: {
+        startDate: startDate.toISOString().split('T')[0],
+        endDate: endDate.toISOString().split('T')[0],
+      },
+      totalManagers: managers.length,
+      managers: report.sort((a, b) => b.teamTotalCheckIns - a.teamTotalCheckIns),
+    };
+  }
+
+  // 16. RELATÓRIO DE PLANTÕES: Ocupação e Demanda por Estande
+  async getBoothsExecutiveReport(
+    tenantId: string,
+    startDateStr?: string,
+    endDateStr?: string,
+  ) {
+    const now = new Date();
+    let startDate: Date;
+    let endDate: Date;
+
+    if (startDateStr) {
+      const [y, m, d] = startDateStr.split('-').map(Number);
+      startDate = new Date(y, m - 1, d, 0, 0, 0, 0);
+    } else {
+      startDate = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+    }
+
+    if (endDateStr) {
+      const [y, m, d] = endDateStr.split('-').map(Number);
+      endDate = new Date(y, m - 1, d, 23, 59, 59, 999);
+    } else {
+      endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+    }
+
+    const booths = await this.boothRepository.find({
+      where: { tenant_id: tenantId, lifecycle_status: 'published' },
+      order: { name: 'ASC' },
+    });
+
+    const presences = await this.presenceRepository.find({
+      where: {
+        tenant_id: tenantId,
+        check_in_at: Between(startDate, endDate),
+      },
+    });
+
+    const presencesByBooth = new Map<string, Presence[]>();
+    for (const p of presences) {
+      const list = presencesByBooth.get(p.booth_id) || [];
+      list.push(p);
+      presencesByBooth.set(p.booth_id, list);
+    }
+
+    const report = booths.map((booth) => {
+      const bPresences = presencesByBooth.get(booth.id) || [];
+      const totalCheckIns = bPresences.length;
+      const uniqueBrokers = new Set(bPresences.map((p) => p.broker_id)).size;
+      const totalMinutes = bPresences.reduce((acc, p) => acc + (p.accumulated_minutes || 0), 0);
+      const hours = Math.floor(totalMinutes / 60);
+      const minutes = totalMinutes % 60;
+
+      const hourCounts: Record<number, number> = {};
+      for (const p of bPresences) {
+        const h = new Date(p.check_in_at).getHours();
+        hourCounts[h] = (hourCounts[h] || 0) + 1;
+      }
+      let peakHour: number | null = null;
+      let maxCount = 0;
+      for (const [h, count] of Object.entries(hourCounts)) {
+        if (count > maxCount) {
+          maxCount = count;
+          peakHour = Number(h);
+        }
+      }
+
+      return {
+        boothId: booth.id,
+        boothName: booth.name,
+        address: booth.address,
+        totalCheckIns,
+        uniqueBrokersCount: uniqueBrokers,
+        totalHoursFormatted: `${hours}h ${minutes}m`,
+        peakHourFormatted: peakHour !== null ? `${String(peakHour).padStart(2, '0')}:00 às ${String(peakHour + 1).padStart(2, '0')}:00` : 'Sem registros',
+      };
+    });
+
+    return {
+      period: {
+        startDate: startDate.toISOString().split('T')[0],
+        endDate: endDate.toISOString().split('T')[0],
+      },
+      totalBooths: booths.length,
+      booths: report.sort((a, b) => b.totalCheckIns - a.totalCheckIns),
     };
   }
 }

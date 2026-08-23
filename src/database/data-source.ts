@@ -7,6 +7,7 @@ import { Booth } from '../booths/entities/booth.entity';
 import { BoothWifi } from '../booths/entities/booth-wifi.entity';
 import { BoothReceptionist } from '../booths/entities/booth-receptionist.entity';
 import { BoothRuleSet } from '../booths/entities/booth-rule-set.entity';
+import { BoothHoliday } from '../booths/entities/booth-holiday.entity';
 import { OnboardingLink } from '../users/entities/onboarding-link.entity';
 import { Presence } from '../presences/entities/presence.entity';
 import { DeadManLog } from '../presences/entities/dead-man-log.entity';
@@ -39,6 +40,7 @@ export const AppDataSource = new DataSource({
     BoothWifi,
     BoothReceptionist,
     BoothRuleSet,
+    BoothHoliday,
     OnboardingLink,
     Presence,
     DeadManLog,

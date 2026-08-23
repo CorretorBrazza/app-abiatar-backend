@@ -9,7 +9,9 @@ import { User } from '../users/user.entity';
 import { CreateBoothDto } from './dto/create-booth.dto';
 import { UpdateBoothDto } from './dto/update-booth.dto';
 import { BoothRuleSet } from './entities/booth-rule-set.entity';
+import { BoothHoliday } from './entities/booth-holiday.entity';
 import { UpdateBoothRulesDto } from './dto/update-booth-rules.dto';
+import { CreateBoothHolidayDto } from './dto/create-booth-holiday.dto';
 import { AuditService } from '../audit/audit.service';
 
 @Injectable()
@@ -30,8 +32,212 @@ export class BoothsService {
     @InjectRepository(BoothRuleSet)
     private ruleSetRepository: Repository<BoothRuleSet>,
 
+    @InjectRepository(BoothHoliday)
+    private holidayRepository: Repository<BoothHoliday>,
+
     private readonly auditService: AuditService,
   ) {}
+
+async onModuleInit() {
+  try {
+    await this.boothRepository.query(`
+      CREATE TABLE IF NOT EXISTS booth_holidays (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+        booth_id uuid REFERENCES booths(id) ON DELETE CASCADE,
+        date varchar(10) NOT NULL,
+        name varchar(150) NOT NULL,
+        roleta_time varchar(5) NOT NULL DEFAULT '09:00',
+        created_by uuid REFERENCES users(id) ON DELETE SET NULL,
+        created_at timestamp NOT NULL DEFAULT now(),
+        updated_at timestamp NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS idx_booth_holidays_tenant_date ON booth_holidays(tenant_id, date);
+    `);
+    console.log('[BOOTHS] Schema auto-healing de booth_holidays garantido com sucesso.');
+  } catch (err) {
+    console.error('[BOOTHS] Aviso ao executar auto-healing de booth_holidays:', err);
+  }
+}
+
+private normalizeDateString(rawDate: string): string {
+  const trimmed = rawDate.trim();
+  if (/^\d{2}\/\d{2}\/\d{4}$/.test(trimmed)) {
+    const [day, month, year] = trimmed.split('/');
+    return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+  }
+  return trimmed;
+}
+
+private getTodayString(): string {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+async createHoliday(
+  dto: CreateBoothHolidayDto,
+  tenantId: string,
+  actor: { id: string; role: string; email?: string },
+) {
+  if (actor.role !== 'diretoria_level_1' && actor.role !== 'platform_admin_level_0') {
+    throw new BadRequestException('Apenas a Diretoria pode cadastrar feriados de roleta única.');
+  }
+
+  const normalizedDate = this.normalizeDateString(dto.date);
+  const today = this.getTodayString();
+
+  if (normalizedDate < today) {
+    throw new BadRequestException('Apenas datas de hoje ou posteriores podem ser cadastradas como feriado.');
+  }
+
+  const roletaTime = dto.roletaTime || '09:00';
+  const createdHolidays: BoothHoliday[] = [];
+
+  if (dto.scope === 'all') {
+    const existing = await this.holidayRepository.findOne({
+      where: { tenant_id: tenantId, date: normalizedDate, booth_id: IsNull() },
+    });
+    if (existing) {
+      existing.name = dto.name.trim();
+      existing.roleta_time = roletaTime;
+      const updated = await this.holidayRepository.save(existing);
+      createdHolidays.push(updated);
+    } else {
+      const holiday = this.holidayRepository.create({
+        tenant_id: tenantId,
+        booth_id: null,
+        date: normalizedDate,
+        name: dto.name.trim(),
+        roleta_time: roletaTime,
+        created_by: actor.id,
+      });
+      const saved = await this.holidayRepository.save(holiday);
+      createdHolidays.push(saved);
+    }
+  } else {
+    if (!dto.boothIds || dto.boothIds.length === 0) {
+      throw new BadRequestException('Selecione ao menos um plantão para aplicar o feriado.');
+    }
+    for (const boothId of dto.boothIds) {
+      const booth = await this.boothRepository.findOne({ where: { id: boothId, tenant_id: tenantId } });
+      if (!booth) continue;
+
+      const existing = await this.holidayRepository.findOne({
+        where: { tenant_id: tenantId, date: normalizedDate, booth_id: boothId },
+      });
+      if (existing) {
+        existing.name = dto.name.trim();
+        existing.roleta_time = roletaTime;
+        const updated = await this.holidayRepository.save(existing);
+        createdHolidays.push(updated);
+      } else {
+        const holiday = this.holidayRepository.create({
+          tenant_id: tenantId,
+          booth_id: boothId,
+          date: normalizedDate,
+          name: dto.name.trim(),
+          roleta_time: roletaTime,
+          created_by: actor.id,
+        });
+        const saved = await this.holidayRepository.save(holiday);
+        createdHolidays.push(saved);
+      }
+    }
+  }
+
+  void this.auditService.record(
+    { tenantId, actorUserId: actor.id, actorRole: actor.role, actorEmail: actor.email },
+    {
+      action: 'HOLIDAY_CREATED',
+      entityType: 'BOOTH_HOLIDAY',
+      entityId: createdHolidays[0]?.id || 'bulk',
+      afterData: { date: normalizedDate, name: dto.name, scope: dto.scope, roletaTime, count: createdHolidays.length },
+      reason: `Feriado com Roleta Única cadastrado pela Diretoria: ${dto.name} (${normalizedDate})`,
+    },
+  );
+
+  return {
+    message: 'Feriado com Roleta Única cadastrado com sucesso!',
+    holidays: createdHolidays,
+  };
+}
+
+async listHolidays(tenantId: string) {
+  const holidays = await this.holidayRepository.find({
+    where: { tenant_id: tenantId },
+    relations: { booth: true },
+    order: { date: 'ASC', created_at: 'ASC' },
+  });
+
+  return holidays.map((h) => ({
+    id: h.id,
+    date: h.date,
+    name: h.name,
+    roleta_time: h.roleta_time,
+    scope: h.booth_id ? 'specific' : 'all',
+    boothId: h.booth_id,
+    boothName: h.booth ? h.booth.name : 'Todos os Plantões',
+    createdAt: h.created_at,
+  }));
+}
+
+async deleteHoliday(
+  holidayId: string,
+  tenantId: string,
+  actor: { id: string; role: string; email?: string },
+) {
+  if (actor.role !== 'diretoria_level_1' && actor.role !== 'platform_admin_level_0') {
+    throw new BadRequestException('Apenas a Diretoria pode remover feriados.');
+  }
+
+  const holiday = await this.holidayRepository.findOne({
+    where: { id: holidayId, tenant_id: tenantId },
+    relations: { booth: true },
+  });
+  if (!holiday) throw new NotFoundException('Feriado não encontrado.');
+
+  const before = { ...holiday };
+  await this.holidayRepository.remove(holiday);
+
+  void this.auditService.record(
+    { tenantId, actorUserId: actor.id, actorRole: actor.role, actorEmail: actor.email },
+    {
+      action: 'HOLIDAY_DELETED',
+      entityType: 'BOOTH_HOLIDAY',
+      entityId: holidayId,
+      beforeData: before,
+      reason: `Feriado ${before.name} (${before.date}) removido pela Diretoria`,
+    },
+  );
+
+  return { message: 'Feriado removido com sucesso.' };
+}
+
+async isHoliday(boothId: string, tenantId: string, targetDate: Date = new Date()): Promise<{ isHoliday: boolean; name?: string; roletaTime?: string }> {
+  const year = targetDate.getFullYear();
+  const month = String(targetDate.getMonth() + 1).padStart(2, '0');
+  const day = String(targetDate.getDate()).padStart(2, '0');
+  const dateStr = `${year}-${month}-${day}`;
+
+  const holidays = await this.holidayRepository.find({
+    where: { tenant_id: tenantId, date: dateStr },
+  });
+
+  const specific = holidays.find((h) => h.booth_id === boothId);
+  if (specific) {
+    return { isHoliday: true, name: specific.name, roletaTime: specific.roleta_time };
+  }
+
+  const global = holidays.find((h) => !h.booth_id);
+  if (global) {
+    return { isHoliday: true, name: global.name, roletaTime: global.roleta_time };
+  }
+
+  return { isHoliday: false };
+}
 
   // 1. Cadastra um novo plantão de vendas com seus respectivos Wi-Fis [7]
   async create(dto: CreateBoothDto, tenantId: string): Promise<Booth> {

@@ -8,6 +8,7 @@ import { Presence } from './entities/presence.entity';
 import { User } from '../users/user.entity';
 import { Booth } from '../booths/entities/booth.entity';
 import { BoothRuleSet } from '../booths/entities/booth-rule-set.entity';
+import { BoothHoliday } from '../booths/entities/booth-holiday.entity';
 import { DeadManLog } from './entities/dead-man-log.entity';
 import { CheckInDto } from './dto/check-in.dto';
 import { PingResponseDto } from './dto/ping-response.dto';
@@ -28,6 +29,9 @@ export class PresencesService {
     @InjectRepository(BoothRuleSet)
     private ruleSetRepository: Repository<BoothRuleSet>,
 
+    @InjectRepository(BoothHoliday)
+    private holidayRepository: Repository<BoothHoliday>,
+
     @InjectRepository(DeadManLog)
     private logRepository: Repository<DeadManLog>,
 
@@ -39,6 +43,32 @@ export class PresencesService {
     private notificationsService: NotificationsService,
     private readonly realtimeService: RealtimeService,
   ) {}
+
+  private async getHolidayForBoothAndDate(boothId: string, tenantId: string, targetDate: Date = new Date()): Promise<{ isHoliday: boolean; name?: string; roletaTime?: string }> {
+    try {
+      const year = targetDate.getFullYear();
+      const month = String(targetDate.getMonth() + 1).padStart(2, '0');
+      const day = String(targetDate.getDate()).padStart(2, '0');
+      const dateStr = `${year}-${month}-${day}`;
+
+      const holidays = await this.holidayRepository.find({
+        where: { tenant_id: tenantId, date: dateStr },
+      });
+
+      const specific = holidays.find((h) => h.booth_id === boothId);
+      if (specific) {
+        return { isHoliday: true, name: specific.name, roletaTime: specific.roleta_time };
+      }
+
+      const global = holidays.find((h) => !h.booth_id);
+      if (global) {
+        return { isHoliday: true, name: global.name, roletaTime: global.roleta_time };
+      }
+    } catch (err) {
+      console.error('[PRESENCES] Erro ao verificar feriado:', err);
+    }
+    return { isHoliday: false };
+  }
 
   // 1. Algoritmo Privado de Haversine (Cálculo de Distância Geográfica)
   private calculateDistanceInMeters(lat1: number, lon1: number, lat2: number, lon2: number): number {
@@ -149,14 +179,23 @@ export class PresencesService {
     const now = new Date();
     const dayOfWeek = now.getDay();
     const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+    const holidayInfo = await this.getHolidayForBoothAndDate(dto.boothId, tenantId, now);
 
-    const roletaTimes = isWeekend
-      ? [{ name: 'Roleta Fim de Semana', time: ruleSet.roleta_weekend_time || '09:00' }]
-      : [
-          { name: 'Roleta 1 (Manhã)', time: ruleSet.roleta_1_time || '09:00' },
-          { name: 'Roleta 2 (Tarde)', time: ruleSet.roleta_2_time || '14:00' },
-          ...(ruleSet.roleta_3_time ? [{ name: 'Roleta 3 (Noite)', time: ruleSet.roleta_3_time }] : []),
-        ];
+    let roletaTimes: Array<{ name: string; time: string }> = [];
+    if (holidayInfo.isHoliday) {
+      roletaTimes = [{
+        name: `Roleta Feriado (${holidayInfo.name || 'Roleta Única'})`,
+        time: holidayInfo.roletaTime || ruleSet.roleta_weekend_time || '09:00',
+      }];
+    } else if (isWeekend) {
+      roletaTimes = [{ name: 'Roleta Fim de Semana', time: ruleSet.roleta_weekend_time || '09:00' }];
+    } else {
+      roletaTimes = [
+        { name: 'Roleta 1 (Manhã)', time: ruleSet.roleta_1_time || '09:00' },
+        { name: 'Roleta 2 (Tarde)', time: ruleSet.roleta_2_time || '14:00' },
+        ...(ruleSet.roleta_3_time ? [{ name: 'Roleta 3 (Noite)', time: ruleSet.roleta_3_time }] : []),
+      ];
+    }
 
     const earlyMinutes = Number(ruleSet.checkin_early_minutes ?? 30);
     const posBarraMinutes = Number(ruleSet.pos_barra_minutes ?? 30);
@@ -651,13 +690,23 @@ export class PresencesService {
 
     for (const booth of booths) {
       const ruleSet = await this.getRuleSetForBooth(booth);
-      const roletaTimes = isWeekend
-        ? [{ name: 'Roleta Fim de Semana', time: ruleSet.roleta_weekend_time || '09:00' }]
-        : [
-            { name: 'Roleta 1 (Manhã)', time: ruleSet.roleta_1_time || '09:00' },
-            { name: 'Roleta 2 (Tarde)', time: ruleSet.roleta_2_time || '14:00' },
-            ...(ruleSet.roleta_3_time ? [{ name: 'Roleta 3 (Noite)', time: ruleSet.roleta_3_time }] : []),
-          ];
+      const holidayInfo = await this.getHolidayForBoothAndDate(booth.id, booth.tenant_id, now);
+
+      let roletaTimes: Array<{ name: string; time: string }> = [];
+      if (holidayInfo.isHoliday) {
+        roletaTimes = [{
+          name: `Roleta Feriado (${holidayInfo.name || 'Roleta Única'})`,
+          time: holidayInfo.roletaTime || ruleSet.roleta_weekend_time || '09:00',
+        }];
+      } else if (isWeekend) {
+        roletaTimes = [{ name: 'Roleta Fim de Semana', time: ruleSet.roleta_weekend_time || '09:00' }];
+      } else {
+        roletaTimes = [
+          { name: 'Roleta 1 (Manhã)', time: ruleSet.roleta_1_time || '09:00' },
+          { name: 'Roleta 2 (Tarde)', time: ruleSet.roleta_2_time || '14:00' },
+          ...(ruleSet.roleta_3_time ? [{ name: 'Roleta 3 (Noite)', time: ruleSet.roleta_3_time }] : []),
+        ];
+      }
 
       for (const r of roletaTimes) {
         const [hours, minutes] = r.time.split(':').map(Number);

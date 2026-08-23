@@ -1,9 +1,9 @@
-// src/booths/booths.controller.ts
 import { Controller, Post, Get, Patch, Delete, Param, Body, UseGuards, ForbiddenException } from '@nestjs/common';
 import { BoothsService } from './booths.service';
 import { CreateBoothDto } from './dto/create-booth.dto';
 import { UpdateBoothRulesDto } from './dto/update-booth-rules.dto';
 import { UpdateBoothDto } from './dto/update-booth.dto';
+import { CreateBoothHolidayDto } from './dto/create-booth-holiday.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { TenantId } from '../auth/decorators/tenant-id.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -12,6 +12,43 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 @UseGuards(JwtAuthGuard) // Protege todas as rotas do controlador exigindo Token JWT Bearer
 export class BoothsController {
   constructor(private readonly boothsService: BoothsService) {}
+
+  @Post('holidays')
+  async createHoliday(
+    @Body() dto: CreateBoothHolidayDto,
+    @CurrentUser() currentUser: { sub: string; role: string; email?: string },
+    @TenantId() tenantId: string,
+  ) {
+    if (currentUser.role !== 'diretoria_level_1' && currentUser.role !== 'platform_admin_level_0') {
+      throw new ForbiddenException('Somente a Diretoria pode cadastrar feriados.');
+    }
+    return this.boothsService.createHoliday(dto, tenantId, {
+      id: currentUser.sub,
+      role: currentUser.role,
+      email: currentUser.email,
+    });
+  }
+
+  @Get('holidays')
+  async listHolidays(@TenantId() tenantId: string) {
+    return this.boothsService.listHolidays(tenantId);
+  }
+
+  @Delete('holidays/:id')
+  async deleteHoliday(
+    @Param('id') holidayId: string,
+    @CurrentUser() currentUser: { sub: string; role: string; email?: string },
+    @TenantId() tenantId: string,
+  ) {
+    if (currentUser.role !== 'diretoria_level_1' && currentUser.role !== 'platform_admin_level_0') {
+      throw new ForbiddenException('Somente a Diretoria pode excluir feriados.');
+    }
+    return this.boothsService.deleteHoliday(holidayId, tenantId, {
+      id: currentUser.sub,
+      role: currentUser.role,
+      email: currentUser.email,
+    });
+  }
 
   @Post()
   async create(@Body() createBoothDto: CreateBoothDto, @CurrentUser() currentUser: { role: string }, @TenantId() tenantId: string) {

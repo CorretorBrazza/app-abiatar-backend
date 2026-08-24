@@ -402,10 +402,8 @@ export class PresencesService {
     let waitingBrokersCount = 0;
 
     if (activePresence && activeBooth) {
-      const now = new Date();
-      const dayOfWeek = now.getDay();
-      const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
-      const holidayInfo = await this.getHolidayForBoothAndDate(activeBooth.id, tenantId, now);
+      const tzNow = getNowInTimezone('America/Sao_Paulo');
+      const holidayInfo = await this.getHolidayForBoothAndDate(activeBooth.id, tenantId, new Date());
 
       let roletaTimes: Array<{ name: string; time: string }> = [];
       if (holidayInfo.isHoliday) {
@@ -413,7 +411,7 @@ export class PresencesService {
           name: `Roleta Feriado (${holidayInfo.name || 'Roleta Única'})`,
           time: holidayInfo.roletaTime || activeRuleSet?.roleta_weekend_time || '09:00',
         }];
-      } else if (isWeekend) {
+      } else if (tzNow.isWeekend) {
         roletaTimes = [{ name: 'Roleta Fim de Semana', time: activeRuleSet?.roleta_weekend_time || '09:00' }];
       } else {
         roletaTimes = [
@@ -425,10 +423,8 @@ export class PresencesService {
 
       const match = roletaTimes.find((r) => r.name === activePresence.roleta_name) || roletaTimes[0];
       if (match) {
-        const [h, m] = match.time.split(':').map(Number);
-        const drawDate = new Date(now);
-        drawDate.setHours(h, m + 1, 0, 0); // Exatamente 1 minuto após o horário
-        drawTimeFormatted = `${String(drawDate.getHours()).padStart(2, '0')}:${String(drawDate.getMinutes()).padStart(2, '0')}`;
+        const roletaMin = timeStringToMinutes(match.time);
+        drawTimeFormatted = minutesToTimeString(roletaMin + 1);
       }
 
       if (!activePresence.roleta_position && activePresence.roleta_entry_type === 'pontual') {
@@ -518,7 +514,7 @@ export class PresencesService {
             boothId: activePresence.booth_id,
             boothName: activeBooth?.name || 'Plantão Ativo',
             checkInAt: activePresence.check_in_at,
-            checkInAtFormatted: new Date(activePresence.check_in_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+            checkInAtFormatted: new Date(activePresence.check_in_at).toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit', second: '2-digit' }),
             drawTimeFormatted,
             activeMinutes,
             minimumMinutes,

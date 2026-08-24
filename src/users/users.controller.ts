@@ -319,4 +319,13 @@ export class UsersController {
   ) {
     return this.usersService.getRealTimeLeadsQueue(tenantId, currentUser);
   }
+
+  @Post('seed-clean-hierarchy')
+  @UseGuards(JwtAuthGuard)
+  async seedCleanHierarchy(
+    @TenantId() tenantId: string,
+    @CurrentUser() currentUser: { sub: string; role: string },
+  ) {
+    return this.usersService.seedCleanHierarchy(tenantId, { id: currentUser.sub, role: currentUser.role });
+  }
 }

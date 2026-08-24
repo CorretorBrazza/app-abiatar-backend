@@ -243,8 +243,9 @@ export class NotificationsService implements OnModuleInit {
 
     const brandName = await this.getTenantBrandName(tenantId);
     let sentCount = 0;
-    for (const device of devices) {
-      if (await this.sendPushNotification(device.token, title, body, data, brandName)) {
+    const uniqueTokens = Array.from(new Set(devices.map((d) => d.token).filter(Boolean)));
+    for (const token of uniqueTokens) {
+      if (await this.sendPushNotification(token, title, body, data, brandName)) {
         sentCount += 1;
       }
     }
@@ -264,8 +265,9 @@ export class NotificationsService implements OnModuleInit {
 
     const brandName = await this.getTenantBrandName(tenantId);
     let sentCount = 0;
-    for (const device of devices) {
-      if (await this.sendPushNotification(device.token, title, body, data, brandName)) {
+    const uniqueTokens = Array.from(new Set(devices.map((d) => d.token).filter(Boolean)));
+    for (const token of uniqueTokens) {
+      if (await this.sendPushNotification(token, title, body, data, brandName)) {
         sentCount += 1;
       }
     }
@@ -297,6 +299,13 @@ export class NotificationsService implements OnModuleInit {
         brandName,
         url: targetUrl,
       };
+
+      const notificationTag = isOperational
+        ? `operational-${data?.eventId || Date.now()}`
+        : data?.type
+        ? `abiatar-${data.type}-${data.presenceId || data.messageId || data.pingId || 'main'}`
+        : `abiatar-${Date.now()}`;
+
       await getMessaging().send({
         notification: { title, body },
         webpush: {
@@ -309,7 +318,7 @@ export class NotificationsService implements OnModuleInit {
             body,
             icon: 'https://abiatar.bitimob.com.br/icon.png',
             badge: 'https://abiatar.bitimob.com.br/icon.png',
-            tag: isOperational ? `operational-${data?.eventId || Date.now()}` : `message-${data?.messageId || Date.now()}`,
+            tag: notificationTag,
             requireInteraction: isOperational,
           },
           fcmOptions: { link: targetUrl },

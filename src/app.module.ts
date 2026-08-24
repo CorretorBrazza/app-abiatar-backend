@@ -13,6 +13,7 @@ import { BoothWifi } from './booths/entities/booth-wifi.entity';
 import { BoothReceptionist } from './booths/entities/booth-receptionist.entity';
 import { BoothRuleSet } from './booths/entities/booth-rule-set.entity';
 import { BoothHoliday } from './booths/entities/booth-holiday.entity';
+import { BoothSpecialSchedule } from './booths/entities/booth-special-schedule.entity';
 import { BoothsModule } from './booths/booths.module';
 import { OnboardingLink } from './users/entities/onboarding-link.entity';
 import { UsersModule } from './users/users.module';
@@ -46,6 +47,7 @@ import { RealtimeModule } from './realtime/realtime.module';
         BoothReceptionist,
         BoothRuleSet,
         BoothHoliday,
+        BoothSpecialSchedule,
         OnboardingLink, 
         Presence, 
         DeadManLog, 

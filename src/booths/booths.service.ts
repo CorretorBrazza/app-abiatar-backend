@@ -365,6 +365,96 @@ async isHoliday(boothId: string, tenantId: string, targetDate: Date = new Date()
       booth.effective_min_brokers_required = Number(rules.minimum_brokers_required);
       booth.gps_radius = rules.gps_radius_meters;
       booth.min_brokers_required = rules.minimum_brokers_required;
+
+      const now = new Date();
+      const dayOfWeek = now.getDay();
+      const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+      const holiday = await this.isHoliday(booth.id, booth.tenant_id, now);
+
+      let roletaTimes: Array<{ name: string; time: string }> = [];
+      if (holiday.isHoliday) {
+        roletaTimes = [{
+          name: `Roleta Feriado (${holiday.name || 'Roleta Única'})`,
+          time: holiday.roletaTime || rules.roleta_weekend_time || '09:00',
+        }];
+      } else if (isWeekend) {
+        roletaTimes = [{ name: 'Roleta Fim de Semana', time: rules.roleta_weekend_time || '09:00' }];
+      } else {
+        roletaTimes = [
+          { name: 'Roleta 1 (Manhã)', time: rules.roleta_1_time || '09:00' },
+          { name: 'Roleta 2 (Tarde)', time: rules.roleta_2_time || '14:00' },
+          ...(rules.roleta_3_time ? [{ name: 'Roleta 3 (Noite)', time: rules.roleta_3_time }] : []),
+        ];
+      }
+
+      const earlyMinutes = Number(rules.checkin_early_minutes ?? 30);
+      const posBarraMinutes = Number(rules.pos_barra_minutes ?? 30);
+
+      let activeRoletaStatus: any = null;
+      let nextUpcomingRoleta: any = null;
+
+      for (const r of roletaTimes) {
+        const [h, m] = r.time.split(':').map(Number);
+        const roletaStart = new Date(now);
+        roletaStart.setHours(h, m, 0, 0);
+
+        const earlyOpen = new Date(roletaStart.getTime() - earlyMinutes * 60 * 1000);
+        const drawTime = new Date(roletaStart.getTime() + 1 * 60 * 1000); // 09:01
+        const posBarraEnd = new Date(roletaStart.getTime() + posBarraMinutes * 60 * 1000);
+
+        const earlyStr = `${String(earlyOpen.getHours()).padStart(2, '0')}:${String(earlyOpen.getMinutes()).padStart(2, '0')}`;
+        const drawStr = `${String(drawTime.getHours()).padStart(2, '0')}:${String(drawTime.getMinutes()).padStart(2, '0')}`;
+        const posBarraEndStr = `${String(posBarraEnd.getHours()).padStart(2, '0')}:${String(posBarraEnd.getMinutes()).padStart(2, '0')}`;
+
+        if (now.getTime() >= earlyOpen.getTime() && now.getTime() <= posBarraEnd.getTime()) {
+          const isPontual = now.getTime() < drawTime.getTime();
+          activeRoletaStatus = {
+            isOpen: true,
+            status: isPontual ? 'open_pontual' : 'open_pos_barra',
+            roletaName: r.name,
+            roletaTime: r.time,
+            drawTimeFormatted: drawStr,
+            earlyOpenFormatted: earlyStr,
+            posBarraEndFormatted: posBarraEndStr,
+            statusLabel: isPontual
+              ? `🟢 Check-in Pontual Aberto (Sorteio às ${drawStr})`
+              : `🟡 Check-in Pós-Barra Aberto (Até às ${posBarraEndStr})`,
+          };
+          break;
+        } else if (now.getTime() < earlyOpen.getTime()) {
+          if (!nextUpcomingRoleta) {
+            nextUpcomingRoleta = {
+              name: r.name,
+              time: r.time,
+              drawTimeFormatted: drawStr,
+              earlyOpenFormatted: earlyStr,
+              posBarraEndFormatted: posBarraEndStr,
+            };
+          }
+        }
+      }
+
+      if (activeRoletaStatus) {
+        (booth as any).roleta_status = activeRoletaStatus;
+      } else if (nextUpcomingRoleta) {
+        (booth as any).roleta_status = {
+          isOpen: false,
+          status: 'closed',
+          roletaName: nextUpcomingRoleta.name,
+          roletaTime: nextUpcomingRoleta.time,
+          drawTimeFormatted: nextUpcomingRoleta.drawTimeFormatted,
+          earlyOpenFormatted: nextUpcomingRoleta.earlyOpenFormatted,
+          posBarraEndFormatted: nextUpcomingRoleta.posBarraEndFormatted,
+          statusLabel: `🔒 Check-in Fechado (Próxima: ${nextUpcomingRoleta.name} · Abre às ${nextUpcomingRoleta.earlyOpenFormatted})`,
+        };
+      } else {
+        (booth as any).roleta_status = {
+          isOpen: false,
+          status: 'closed',
+          roletaName: 'Roletas Encerradas Hoje',
+          statusLabel: `🔒 Check-in Encerrado Hoje (Abre amanhã às ${roletaTimes[0]?.time || '09:00'})`,
+        };
+      }
     } catch (error) {
       console.error('[BOOTH_RULES] Falha ao carregar regras; usando valores legados do plantão:', error instanceof Error ? error.message : String(error));
     }

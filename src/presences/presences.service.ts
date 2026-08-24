@@ -199,10 +199,11 @@ export class PresencesService {
     const earlyMinutes = Number(ruleSet.checkin_early_minutes ?? 30);
     const posBarraMinutes = Number(ruleSet.pos_barra_minutes ?? 30);
 
-    let assignedRoletaName = roletaTimes[0]?.name || 'Roleta 1 (Manhã)';
+    let assignedRoletaName = '';
     let assignedEntryType: 'pontual' | 'pos_barra' = 'pontual';
     let assignedValidationStartsAt: Date = now;
     let assignedPosition: number | null = null;
+    let assignedDrawTimeStr = '09:01';
 
     let matchingRoleta: any = null;
     for (const r of roletaTimes) {
@@ -211,8 +212,10 @@ export class PresencesService {
       roletaStart.setHours(h, m, 0, 0);
 
       const earlyOpen = new Date(roletaStart.getTime() - earlyMinutes * 60 * 1000);
-      const drawTime = new Date(roletaStart.getTime() + 1 * 60 * 1000);
+      const drawTime = new Date(roletaStart.getTime() + 1 * 60 * 1000); // Exatamente 1 minuto após: 09:01, 14:01
       const posBarraEnd = new Date(roletaStart.getTime() + posBarraMinutes * 60 * 1000);
+
+      const drawStr = `${String(drawTime.getHours()).padStart(2, '0')}:${String(drawTime.getMinutes()).padStart(2, '0')}`;
 
       if (now.getTime() >= earlyOpen.getTime() && now.getTime() <= posBarraEnd.getTime()) {
         matchingRoleta = {
@@ -220,6 +223,7 @@ export class PresencesService {
           roletaStart,
           earlyOpen,
           drawTime,
+          drawTimeFormatted: drawStr,
           posBarraEnd,
           isPontual: now.getTime() < drawTime.getTime(),
           isPosBarra: now.getTime() >= drawTime.getTime() && now.getTime() <= posBarraEnd.getTime(),
@@ -228,33 +232,48 @@ export class PresencesService {
       }
     }
 
-    if (matchingRoleta) {
-      assignedRoletaName = matchingRoleta.name;
-      if (matchingRoleta.isPontual) {
-        assignedEntryType = 'pontual';
-        assignedValidationStartsAt = matchingRoleta.roletaStart;
-        assignedPosition = null; // Fica aguardando o sorteio automático das 09:01
-      } else {
-        assignedEntryType = 'pos_barra';
-        assignedValidationStartsAt = now; // No pós-barra, os 120 min contam a partir da chegada
-        
-        // Pós-Barra entra automaticamente no final da fila
-        const existingInBooth = await this.presenceRepository.find({
-          where: {
-            booth_id: dto.boothId,
-            tenant_id: tenantId,
-            status: 'online',
-            roleta_name: assignedRoletaName,
-          },
-        });
-        const maxPos = existingInBooth.reduce((max, p) => Math.max(max, p.roleta_position || 0), 0);
-        assignedPosition = maxPos + 1;
-      }
-    } else {
-      assignedRoletaName = roletaTimes[0]?.name || 'Roleta Normal';
+    // TRAVA ESTRITA: Se estiver fora das janelas de check-in permitidas hoje, REJEITA imediatamente!
+    if (!matchingRoleta) {
+      const allowedWindows = roletaTimes.map((r) => {
+        const [h, m] = r.time.split(':').map(Number);
+        const start = new Date(now);
+        start.setHours(h, m, 0, 0);
+        const early = new Date(start.getTime() - earlyMinutes * 60 * 1000);
+        const draw = new Date(start.getTime() + 1 * 60 * 1000);
+        const end = new Date(start.getTime() + posBarraMinutes * 60 * 1000);
+        const earlyStr = `${String(early.getHours()).padStart(2, '0')}:${String(early.getMinutes()).padStart(2, '0')}`;
+        const drawStr = `${String(draw.getHours()).padStart(2, '0')}:${String(draw.getMinutes()).padStart(2, '0')}`;
+        const endStr = `${String(end.getHours()).padStart(2, '0')}:${String(end.getMinutes()).padStart(2, '0')}`;
+        return `${r.name} (Check-in das ${earlyStr} às ${endStr} · Sorteio às ${drawStr})`;
+      }).join(' | ');
+
+      throw new BadRequestException(
+        `Check-in fora do horário permitido para o plantão '${booth.name}'. Janelas de Check-in hoje: ${allowedWindows}.`,
+      );
+    }
+
+    assignedRoletaName = matchingRoleta.name;
+    assignedDrawTimeStr = matchingRoleta.drawTimeFormatted;
+
+    if (matchingRoleta.isPontual) {
       assignedEntryType = 'pontual';
-      assignedValidationStartsAt = now;
-      assignedPosition = null;
+      assignedValidationStartsAt = matchingRoleta.roletaStart;
+      assignedPosition = null; // Fica aguardando o sorteio automático exatamente às 09:01 / 14:01
+    } else {
+      assignedEntryType = 'pos_barra';
+      assignedValidationStartsAt = now; // No pós-barra, os 120 min contam a partir da chegada
+      
+      // Pós-Barra entra automaticamente no final da fila
+      const existingInBooth = await this.presenceRepository.find({
+        where: {
+          booth_id: dto.boothId,
+          tenant_id: tenantId,
+          status: 'online',
+          roleta_name: assignedRoletaName,
+        },
+      });
+      const maxPos = existingInBooth.reduce((max, p) => Math.max(max, p.roleta_position || 0), 0);
+      assignedPosition = maxPos + 1;
     }
 
     const presence = this.presenceRepository.create({
@@ -276,7 +295,7 @@ export class PresencesService {
     });
 
     const savedPresence = await this.presenceRepository.save(presence);
-    this.realtimeService.publish({ eventType: 'presence.checked_in', tenantId, aggregateId: savedPresence.id, payload: { brokerId, boothId: dto.boothId, status: savedPresence.status, nextConfirmationAt: savedPresence.next_confirmation_at, roletaPosition: savedPresence.roleta_position, roletaEntryType: savedPresence.roleta_entry_type } });
+    this.realtimeService.publish({ eventType: 'presence.checked_in', tenantId, aggregateId: savedPresence.id, payload: { brokerId, boothId: dto.boothId, status: savedPresence.status, nextConfirmationAt: savedPresence.next_confirmation_at, roletaPosition: savedPresence.roleta_position, roletaEntryType: savedPresence.roleta_entry_type, drawTimeFormatted: assignedDrawTimeStr } });
 
     // Tenta processar sorteios pendentes caso o check-in ocorra no marco do sorteio
     void this.processRoletaDraws();
@@ -284,11 +303,12 @@ export class PresencesService {
     return {
       message: assignedEntryType === 'pos_barra'
         ? `Check-in Pós-Barra confirmado! Você assumiu o ${assignedPosition}º Lugar no final da fila.`
-        : 'Check-in Pontual confirmado! Aguarde o sorteio da Roleta às 09:01.',
+        : `Check-in Pontual confirmado! Aguarde o sorteio da Roleta exatamente às ${assignedDrawTimeStr}.`,
       presenceId: savedPresence.id,
       roletaName: savedPresence.roleta_name,
       roletaEntryType: savedPresence.roleta_entry_type,
       roletaPosition: savedPresence.roleta_position,
+      drawTimeFormatted: assignedDrawTimeStr,
       methodUsed: methodUsed,
       distanceInMeters: Math.round(distanceCalculated),
     };
@@ -385,9 +405,56 @@ export class PresencesService {
       : 0;
     const minimumMinutes = activePresence?.minimum_period_minutes || activeRuleSet?.minimum_period_minutes || 120;
 
-    // Busca a fila completa da roleta no plantão onde o corretor está ativo
+    let drawTimeFormatted = '09:01';
+    let waitingBrokersCount = 0;
+
+    if (activePresence && activeBooth) {
+      const now = new Date();
+      const dayOfWeek = now.getDay();
+      const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+      const holidayInfo = await this.getHolidayForBoothAndDate(activeBooth.id, tenantId, now);
+
+      let roletaTimes: Array<{ name: string; time: string }> = [];
+      if (holidayInfo.isHoliday) {
+        roletaTimes = [{
+          name: `Roleta Feriado (${holidayInfo.name || 'Roleta Única'})`,
+          time: holidayInfo.roletaTime || activeRuleSet?.roleta_weekend_time || '09:00',
+        }];
+      } else if (isWeekend) {
+        roletaTimes = [{ name: 'Roleta Fim de Semana', time: activeRuleSet?.roleta_weekend_time || '09:00' }];
+      } else {
+        roletaTimes = [
+          { name: 'Roleta 1 (Manhã)', time: activeRuleSet?.roleta_1_time || '09:00' },
+          { name: 'Roleta 2 (Tarde)', time: activeRuleSet?.roleta_2_time || '14:00' },
+          ...(activeRuleSet?.roleta_3_time ? [{ name: 'Roleta 3 (Noite)', time: activeRuleSet.roleta_3_time }] : []),
+        ];
+      }
+
+      const match = roletaTimes.find((r) => r.name === activePresence.roleta_name) || roletaTimes[0];
+      if (match) {
+        const [h, m] = match.time.split(':').map(Number);
+        const drawDate = new Date(now);
+        drawDate.setHours(h, m + 1, 0, 0); // Exatamente 1 minuto após o horário
+        drawTimeFormatted = `${String(drawDate.getHours()).padStart(2, '0')}:${String(drawDate.getMinutes()).padStart(2, '0')}`;
+      }
+
+      if (!activePresence.roleta_position && activePresence.roleta_entry_type === 'pontual') {
+        waitingBrokersCount = await this.presenceRepository.count({
+          where: {
+            booth_id: activePresence.booth_id,
+            tenant_id: tenantId,
+            status: 'online',
+            roleta_name: activePresence.roleta_name || undefined,
+            roleta_entry_type: 'pontual',
+            roleta_position: IsNull(),
+          },
+        });
+      }
+    }
+
+    // Busca a fila completa da roleta no plantão onde o corretor está ativo (apenas após o sorteio)
     let boothQueue: any[] = [];
-    if (activePresence) {
+    if (activePresence && activePresence.roleta_position) {
       const presencesInBooth = await this.presenceRepository.find({
         where: {
           booth_id: activePresence.booth_id,
@@ -399,14 +466,16 @@ export class PresencesService {
         order: { roleta_position: 'ASC' },
       });
 
-      boothQueue = presencesInBooth.map((p) => ({
-        brokerId: p.broker_id,
-        nomeGuerra: p.broker?.nome_guerra || 'Corretor',
-        roletaPosition: p.roleta_position,
-        roletaEntryType: p.roleta_entry_type,
-        minutesActive: Math.max(0, Math.floor((Date.now() - new Date(p.validation_starts_at || p.check_in_at).getTime()) / 1000 / 60)),
-        isCurrentBroker: p.broker_id === brokerId,
-      }));
+      boothQueue = presencesInBooth
+        .filter((p) => p.roleta_position !== null)
+        .map((p) => ({
+          brokerId: p.broker_id,
+          nomeGuerra: p.broker?.nome_guerra || 'Corretor',
+          roletaPosition: p.roleta_position,
+          roletaEntryType: p.roleta_entry_type,
+          minutesActive: Math.max(0, Math.floor((Date.now() - new Date(p.validation_starts_at || p.check_in_at).getTime()) / 1000 / 60)),
+          isCurrentBroker: p.broker_id === brokerId,
+        }));
     }
 
     // Busca todos os plantões publicados da construtora para detalhar as roletas por estande
@@ -453,6 +522,11 @@ export class PresencesService {
       activeShift: activePresence
         ? {
             presenceId: activePresence.id,
+            boothId: activePresence.booth_id,
+            boothName: activeBooth?.name || 'Plantão Ativo',
+            checkInAt: activePresence.check_in_at,
+            checkInAtFormatted: new Date(activePresence.check_in_at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+            drawTimeFormatted,
             activeMinutes,
             minimumMinutes,
             minimumReached: activeMinutes >= minimumMinutes,
@@ -460,6 +534,7 @@ export class PresencesService {
             roletaEntryType: activePresence.roleta_entry_type,
             roletaPosition: activePresence.roleta_position,
             waitingDraw: activePresence.roleta_entry_type === 'pontual' && !activePresence.roleta_position,
+            waitingBrokersCount,
             boothQueue,
             lastConfirmedAt: activePresence.last_confirmed_at,
             nextConfirmationAt: activePresence.next_confirmation_at,

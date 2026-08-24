@@ -15,6 +15,7 @@ import { Message } from '../messages/entities/message.entity'; // <-- ADICIONE E
 import { MessageRecipient } from '../messages/entities/message-recipient.entity';
 import { NotificationsService } from '../notifications/notifications.service';
 import { RealtimeService } from '../realtime/realtime.service';
+import { getNowInTimezone, timeStringToMinutes, minutesToTimeString } from '../utils/timezone.util';
 
 @Injectable()
 export class PresencesService {
@@ -175,9 +176,9 @@ export class PresencesService {
       );
     }
 
+    const tzNow = getNowInTimezone('America/Sao_Paulo');
+    const nowMinutes = tzNow.nowMinutes;
     const now = new Date();
-    const dayOfWeek = now.getDay();
-    const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
     const holidayInfo = await this.getHolidayForBoothAndDate(dto.boothId, tenantId, now);
 
     let roletaTimes: Array<{ name: string; time: string }> = [];
@@ -186,7 +187,7 @@ export class PresencesService {
         name: `Roleta Feriado (${holidayInfo.name || 'Roleta Única'})`,
         time: holidayInfo.roletaTime || ruleSet.roleta_weekend_time || '09:00',
       }];
-    } else if (isWeekend) {
+    } else if (tzNow.isWeekend) {
       roletaTimes = [{ name: 'Roleta Fim de Semana', time: ruleSet.roleta_weekend_time || '09:00' }];
     } else {
       roletaTimes = [
@@ -207,26 +208,23 @@ export class PresencesService {
 
     let matchingRoleta: any = null;
     for (const r of roletaTimes) {
-      const [h, m] = r.time.split(':').map(Number);
-      const roletaStart = new Date(now);
-      roletaStart.setHours(h, m, 0, 0);
+      const roletaMinutes = timeStringToMinutes(r.time);
+      const earlyOpenMinutes = roletaMinutes - earlyMinutes;
+      const drawMinutes = roletaMinutes + 1;
+      const posBarraEndMinutes = roletaMinutes + posBarraMinutes;
 
-      const earlyOpen = new Date(roletaStart.getTime() - earlyMinutes * 60 * 1000);
-      const drawTime = new Date(roletaStart.getTime() + 1 * 60 * 1000); // Exatamente 1 minuto após: 09:01, 14:01
-      const posBarraEnd = new Date(roletaStart.getTime() + posBarraMinutes * 60 * 1000);
+      const drawStr = minutesToTimeString(drawMinutes);
 
-      const drawStr = `${String(drawTime.getHours()).padStart(2, '0')}:${String(drawTime.getMinutes()).padStart(2, '0')}`;
-
-      if (now.getTime() >= earlyOpen.getTime() && now.getTime() <= posBarraEnd.getTime()) {
+      if (nowMinutes >= earlyOpenMinutes && nowMinutes <= posBarraEndMinutes) {
         matchingRoleta = {
           name: r.name,
-          roletaStart,
-          earlyOpen,
-          drawTime,
+          roletaMinutes,
+          earlyOpenMinutes,
+          drawMinutes,
           drawTimeFormatted: drawStr,
-          posBarraEnd,
-          isPontual: now.getTime() < drawTime.getTime(),
-          isPosBarra: now.getTime() >= drawTime.getTime() && now.getTime() <= posBarraEnd.getTime(),
+          posBarraEndMinutes,
+          isPontual: nowMinutes < drawMinutes,
+          isPosBarra: nowMinutes >= drawMinutes && nowMinutes <= posBarraEndMinutes,
         };
         break;
       }
@@ -235,15 +233,10 @@ export class PresencesService {
     // TRAVA ESTRITA: Se estiver fora das janelas de check-in permitidas hoje, REJEITA imediatamente!
     if (!matchingRoleta) {
       const allowedWindows = roletaTimes.map((r) => {
-        const [h, m] = r.time.split(':').map(Number);
-        const start = new Date(now);
-        start.setHours(h, m, 0, 0);
-        const early = new Date(start.getTime() - earlyMinutes * 60 * 1000);
-        const draw = new Date(start.getTime() + 1 * 60 * 1000);
-        const end = new Date(start.getTime() + posBarraMinutes * 60 * 1000);
-        const earlyStr = `${String(early.getHours()).padStart(2, '0')}:${String(early.getMinutes()).padStart(2, '0')}`;
-        const drawStr = `${String(draw.getHours()).padStart(2, '0')}:${String(draw.getMinutes()).padStart(2, '0')}`;
-        const endStr = `${String(end.getHours()).padStart(2, '0')}:${String(end.getMinutes()).padStart(2, '0')}`;
+        const roletaMin = timeStringToMinutes(r.time);
+        const earlyStr = minutesToTimeString(roletaMin - earlyMinutes);
+        const drawStr = minutesToTimeString(roletaMin + 1);
+        const endStr = minutesToTimeString(roletaMin + posBarraMinutes);
         return `${r.name} (Check-in das ${earlyStr} às ${endStr} · Sorteio às ${drawStr})`;
       }).join(' | ');
 
@@ -257,8 +250,8 @@ export class PresencesService {
 
     if (matchingRoleta.isPontual) {
       assignedEntryType = 'pontual';
-      assignedValidationStartsAt = matchingRoleta.roletaStart;
-      assignedPosition = null; // Fica aguardando o sorteio automático exatamente às 09:01 / 14:01
+      assignedValidationStartsAt = now;
+      assignedPosition = null; // Fica aguardando o sorteio automático exatamente às 09:01 / 13:31 / 14:01
     } else {
       assignedEntryType = 'pos_barra';
       assignedValidationStartsAt = now; // No pós-barra, os 120 min contam a partir da chegada
@@ -752,19 +745,18 @@ export class PresencesService {
     await this.processRoletaDraws();
   }
 
-  // Realiza o sorteio aleatório da Roleta para todos os plantões no minuto exato configurado (ex: 09:01, 14:01)
+  // Realiza o sorteio aleatório da Roleta para todos os plantões no minuto exato configurado (ex: 09:01, 13:31, 14:01)
   async processRoletaDraws() {
     const booths = await this.boothRepository.find({
       where: { lifecycle_status: 'published' },
     });
 
-    const now = new Date();
-    const dayOfWeek = now.getDay();
-    const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
+    const tzNow = getNowInTimezone('America/Sao_Paulo');
+    const nowMinutes = tzNow.nowMinutes;
 
     for (const booth of booths) {
       const ruleSet = await this.getRuleSetForBooth(booth);
-      const holidayInfo = await this.getHolidayForBoothAndDate(booth.id, booth.tenant_id, now);
+      const holidayInfo = await this.getHolidayForBoothAndDate(booth.id, booth.tenant_id, new Date());
 
       let roletaTimes: Array<{ name: string; time: string }> = [];
       if (holidayInfo.isHoliday) {
@@ -772,7 +764,7 @@ export class PresencesService {
           name: `Roleta Feriado (${holidayInfo.name || 'Roleta Única'})`,
           time: holidayInfo.roletaTime || ruleSet.roleta_weekend_time || '09:00',
         }];
-      } else if (isWeekend) {
+      } else if (tzNow.isWeekend) {
         roletaTimes = [{ name: 'Roleta Fim de Semana', time: ruleSet.roleta_weekend_time || '09:00' }];
       } else {
         roletaTimes = [
@@ -783,14 +775,11 @@ export class PresencesService {
       }
 
       for (const r of roletaTimes) {
-        const [hours, minutes] = r.time.split(':').map(Number);
-        const roletaStartDate = new Date(now);
-        roletaStartDate.setHours(hours, minutes, 0, 0);
+        const roletaMinutes = timeStringToMinutes(r.time);
+        const drawMinutes = roletaMinutes + 1; // 09:01, 13:31, 14:01
 
-        const drawDate = new Date(roletaStartDate.getTime() + 1 * 60 * 1000); // 09:01
-
-        // Se já passou do horário do sorteio (09:01)
-        if (now.getTime() >= drawDate.getTime()) {
+        // Se já passou ou atingiu o horário do sorteio (ex: 13:31)
+        if (nowMinutes >= drawMinutes) {
           const unplacedPresences = await this.presenceRepository.find({
             where: {
               booth_id: booth.id,

@@ -14,6 +14,7 @@ import { UpdateBoothRulesDto } from './dto/update-booth-rules.dto';
 import { CreateBoothHolidayDto } from './dto/create-booth-holiday.dto';
 import { AuditService } from '../audit/audit.service';
 import { RealtimeService } from '../realtime/realtime.service';
+import { getNowInTimezone, timeStringToMinutes, minutesToTimeString } from '../utils/timezone.util';
 
 @Injectable()
 export class BoothsService {
@@ -405,10 +406,9 @@ async isHoliday(boothId: string, tenantId: string, targetDate: Date = new Date()
       booth.gps_radius = rules.gps_radius_meters;
       booth.min_brokers_required = rules.minimum_brokers_required;
 
-      const now = new Date();
-      const dayOfWeek = now.getDay();
-      const isWeekend = dayOfWeek === 0 || dayOfWeek === 6;
-      const holiday = await this.isHoliday(booth.id, booth.tenant_id, now);
+      const tzNow = getNowInTimezone('America/Sao_Paulo');
+      const nowMinutes = tzNow.nowMinutes;
+      const holiday = await this.isHoliday(booth.id, booth.tenant_id, new Date());
 
       let roletaTimes: Array<{ name: string; time: string }> = [];
       if (holiday.isHoliday) {
@@ -416,7 +416,7 @@ async isHoliday(boothId: string, tenantId: string, targetDate: Date = new Date()
           name: `Roleta Feriado (${holiday.name || 'Roleta Única'})`,
           time: holiday.roletaTime || rules.roleta_weekend_time || '09:00',
         }];
-      } else if (isWeekend) {
+      } else if (tzNow.isWeekend) {
         roletaTimes = [{ name: 'Roleta Fim de Semana', time: rules.roleta_weekend_time || '09:00' }];
       } else {
         roletaTimes = [
@@ -433,20 +433,17 @@ async isHoliday(boothId: string, tenantId: string, targetDate: Date = new Date()
       let nextUpcomingRoleta: any = null;
 
       for (const r of roletaTimes) {
-        const [h, m] = r.time.split(':').map(Number);
-        const roletaStart = new Date(now);
-        roletaStart.setHours(h, m, 0, 0);
+        const roletaMinutes = timeStringToMinutes(r.time);
+        const earlyOpenMinutes = roletaMinutes - earlyMinutes;
+        const drawMinutes = roletaMinutes + 1; // Sorteio exatamente 1 minuto após: 09:01, 13:31, 14:01
+        const posBarraEndMinutes = roletaMinutes + posBarraMinutes;
 
-        const earlyOpen = new Date(roletaStart.getTime() - earlyMinutes * 60 * 1000);
-        const drawTime = new Date(roletaStart.getTime() + 1 * 60 * 1000); // 09:01
-        const posBarraEnd = new Date(roletaStart.getTime() + posBarraMinutes * 60 * 1000);
+        const earlyStr = minutesToTimeString(earlyOpenMinutes);
+        const drawStr = minutesToTimeString(drawMinutes);
+        const posBarraEndStr = minutesToTimeString(posBarraEndMinutes);
 
-        const earlyStr = `${String(earlyOpen.getHours()).padStart(2, '0')}:${String(earlyOpen.getMinutes()).padStart(2, '0')}`;
-        const drawStr = `${String(drawTime.getHours()).padStart(2, '0')}:${String(drawTime.getMinutes()).padStart(2, '0')}`;
-        const posBarraEndStr = `${String(posBarraEnd.getHours()).padStart(2, '0')}:${String(posBarraEnd.getMinutes()).padStart(2, '0')}`;
-
-        if (now.getTime() >= earlyOpen.getTime() && now.getTime() <= posBarraEnd.getTime()) {
-          const isPontual = now.getTime() < drawTime.getTime();
+        if (nowMinutes >= earlyOpenMinutes && nowMinutes <= posBarraEndMinutes) {
+          const isPontual = nowMinutes < drawMinutes;
           activeRoletaStatus = {
             isOpen: true,
             status: isPontual ? 'open_pontual' : 'open_pos_barra',
@@ -460,7 +457,7 @@ async isHoliday(boothId: string, tenantId: string, targetDate: Date = new Date()
               : `🟡 Check-in Pós-Barra Aberto (Até às ${posBarraEndStr})`,
           };
           break;
-        } else if (now.getTime() < earlyOpen.getTime()) {
+        } else if (nowMinutes < earlyOpenMinutes) {
           if (!nextUpcomingRoleta) {
             nextUpcomingRoleta = {
               name: r.name,

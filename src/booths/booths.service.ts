@@ -13,6 +13,7 @@ import { BoothHoliday } from './entities/booth-holiday.entity';
 import { UpdateBoothRulesDto } from './dto/update-booth-rules.dto';
 import { CreateBoothHolidayDto } from './dto/create-booth-holiday.dto';
 import { AuditService } from '../audit/audit.service';
+import { RealtimeService } from '../realtime/realtime.service';
 
 @Injectable()
 export class BoothsService {
@@ -36,6 +37,7 @@ export class BoothsService {
     private holidayRepository: Repository<BoothHoliday>,
 
     private readonly auditService: AuditService,
+    private readonly realtimeService: RealtimeService,
   ) {}
 
 async onModuleInit() {
@@ -159,6 +161,13 @@ async createHoliday(
     },
   );
 
+  this.realtimeService.publish({
+    eventType: 'booth.holiday_created',
+    tenantId,
+    aggregateId: createdHolidays[0]?.id || 'bulk',
+    payload: { date: normalizedDate, name: dto.name, roletaTime },
+  });
+
   return {
     message: 'Feriado com Roleta Única cadastrado com sucesso!',
     holidays: createdHolidays,
@@ -212,6 +221,13 @@ async deleteHoliday(
       reason: `Feriado ${before.name} (${before.date}) removido pela Diretoria`,
     },
   );
+
+  this.realtimeService.publish({
+    eventType: 'booth.holiday_deleted',
+    tenantId,
+    aggregateId: holidayId,
+    payload: { holidayId, date: before.date, name: before.name },
+  });
 
   return { message: 'Feriado removido com sucesso.' };
 }
@@ -270,6 +286,13 @@ async isHoliday(boothId: string, tenantId: string, targetDate: Date = new Date()
       await this.wifiRepository.save(wifiEntities);
     }
 
+    this.realtimeService.publish({
+      eventType: 'booth.created',
+      tenantId,
+      aggregateId: savedBooth.id,
+      payload: { boothId: savedBooth.id, name: savedBooth.name },
+    });
+
     // Retorna o plantão já com as suas redes Wi-Fi associadas [7]
     return this.findOne(savedBooth.id, tenantId);
   }
@@ -314,6 +337,14 @@ async isHoliday(boothId: string, tenantId: string, targetDate: Date = new Date()
       { tenantId, boothId, actorUserId: actor.id, actorRole: actor.role, actorEmail: actor.email },
       { action: 'BOOTH_UPDATED', entityType: 'booth', entityId: boothId, beforeData: before as unknown as Record<string, unknown>, afterData: saved as unknown as Record<string, unknown>, reason: dto.reason || 'Atualização do cadastro do plantão' },
     );
+
+    this.realtimeService.publish({
+      eventType: 'booth.updated',
+      tenantId,
+      aggregateId: boothId,
+      payload: { boothId, name: saved.name, address: saved.address, gpsRadius: saved.gps_radius },
+    });
+
     return this.findOne(boothId, tenantId);
   }
 
@@ -337,6 +368,14 @@ async isHoliday(boothId: string, tenantId: string, targetDate: Date = new Date()
       { tenantId, boothId, actorUserId: actor.id, actorRole: actor.role, actorEmail: actor.email },
       { action: `BOOTH_${action.toUpperCase()}`, entityType: 'booth', entityId: boothId, afterData: saved as unknown as Record<string, unknown>, reason: `Transição de ciclo de vida: ${action}` },
     );
+
+    this.realtimeService.publish({
+      eventType: 'booth.lifecycle_changed',
+      tenantId,
+      aggregateId: boothId,
+      payload: { boothId, status: saved.lifecycle_status, action },
+    });
+
     return this.findOne(boothId, tenantId);
   }
 
@@ -567,6 +606,24 @@ async isHoliday(boothId: string, tenantId: string, targetDate: Date = new Date()
         reason: dto.reason || 'Atualização das regras do plantão pela Diretoria',
       },
     );
+
+    this.realtimeService.publish({
+      eventType: 'booth.rules_updated',
+      tenantId,
+      aggregateId: boothId,
+      payload: {
+        boothId,
+        version: saved.version,
+        roleta1Time: saved.roleta_1_time,
+        roleta2Time: saved.roleta_2_time,
+        roletaWeekendTime: saved.roleta_weekend_time,
+        checkinEarlyMinutes: saved.checkin_early_minutes,
+        posBarraMinutes: saved.pos_barra_minutes,
+        openingTime: saved.opening_time,
+        closingTime: saved.closing_time,
+      },
+    });
+
     return saved;
   }
 
@@ -664,6 +721,12 @@ async isHoliday(boothId: string, tenantId: string, targetDate: Date = new Date()
   async remove(id: string, tenantId: string): Promise<{ message: string }> {
     const booth = await this.findOne(id, tenantId);
     await this.boothRepository.remove(booth);
+    this.realtimeService.publish({
+      eventType: 'booth.deleted',
+      tenantId,
+      aggregateId: id,
+      payload: { boothId: id },
+    });
     return { message: 'Plantão de vendas e redes Wi-Fi removidos com sucesso.' };
   }
 }

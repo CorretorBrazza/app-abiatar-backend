@@ -13,11 +13,16 @@ export class JwtAuthGuard implements CanActivate {
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest();
     const authHeader = request.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      throw new UnauthorizedException('Token de autenticação não fornecido ou inválido.');
+    let token: string | undefined;
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      token = authHeader.split(' ')[1];
+    } else if (request.query?.token) {
+      token = request.query.token as string;
     }
 
-    const token = authHeader.split(' ')[1];
+    if (!token) {
+      throw new UnauthorizedException('Token de autenticação não fornecido ou inválido.');
+    }
     try {
       const payload = await this.jwtService.verifyAsync(token, { secret: process.env.JWT_SECRET });
       const user = await this.dataSource.getRepository(User).findOne({

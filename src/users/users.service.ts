@@ -1065,7 +1065,7 @@ export class UsersService implements OnModuleInit {
       // 5. Consulta usuários remanescentes
       const remainingUsers = await this.userRepository.find({
         where: { tenant_id: tenantId },
-        select: ['id', 'name', 'nome_guerra', 'email', 'role', 'status'],
+        select: { id: true, name: true, nome_guerra: true, email: true, role: true, status: true },
       });
 
       void this.auditService.record(

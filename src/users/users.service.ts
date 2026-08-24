@@ -847,23 +847,24 @@ export class UsersService implements OnModuleInit {
     const tenant = await this.tenantRepository.findOne({ where: { id: tenantId } });
     if (!tenant) throw new NotFoundException('Tenant não encontrado.');
 
-    // 1. Garante o diretor antes de tudo
-    const defaultPasswordHash = await bcrypt.hash('12345678', 10);
-    const director = await this.userRepository.findOne({
-      where: { tenant_id: tenantId, email: 'diretor@abiatar.test' },
-    });
-    if (director) {
-      director.password_hash = defaultPasswordHash;
-      director.must_change_password = false;
-      director.status = 'active';
-      director.removed_at = null;
-      await this.userRepository.save(director);
-    }
-    const directorId = director?.id || actor.id;
-
-    // 2. Limpa tabelas dependentes em ordem correta
     try {
-      await this.userRepository.query(`UPDATE booths SET manager_id = NULL WHERE tenant_id = $1`, [tenantId]);
+      // 1. Garante o diretor antes de tudo
+      const defaultPasswordHash = await bcrypt.hash('12345678', 10);
+      const director = await this.userRepository.findOne({
+        where: { tenant_id: tenantId, email: 'diretor@abiatar.test' },
+      });
+      if (director) {
+        director.password_hash = defaultPasswordHash;
+        director.must_change_password = false;
+        director.status = 'active';
+        director.removed_at = null;
+        await this.userRepository.save(director);
+      }
+      const directorId = director?.id || actor.id;
+
+      // 2. Limpa tabelas dependentes e desvincula foreign keys em ordem correta
+      await this.userRepository.query(`UPDATE booths SET manager_id = NULL, published_by = $2 WHERE tenant_id = $1`, [tenantId, directorId]);
+      await this.userRepository.query(`UPDATE booth_rule_sets SET created_by = $2 WHERE tenant_id = $1`, [tenantId, directorId]);
       await this.userRepository.query(`UPDATE users SET manager_id = NULL WHERE tenant_id = $1`, [tenantId]);
       await this.userRepository.query(`UPDATE booth_holidays SET created_by = $2 WHERE tenant_id = $1`, [tenantId, directorId]);
       await this.userRepository.query(`UPDATE audit_logs SET actor_user_id = $2 WHERE tenant_id = $1`, [tenantId, directorId]);
@@ -875,119 +876,120 @@ export class UsersService implements OnModuleInit {
       await this.userRepository.query(`DELETE FROM onboarding_links WHERE tenant_id = $1`, [tenantId]);
       await this.userRepository.query(`DELETE FROM push_device_tokens WHERE tenant_id = $1`, [tenantId]);
       await this.userRepository.query(`DELETE FROM users WHERE tenant_id = $1 AND email != 'diretor@abiatar.test'`, [tenantId]);
-    } catch (cleanErr) {
-      console.error('[SEED] Erro ao limpar tabelas filhas:', cleanErr);
+
+      // 3. Cria os 2 Gerentes
+      // Gerente 1
+      const gerente1 = this.userRepository.create({
+        tenant_id: tenantId,
+        name: 'Carlos Roberto Silva',
+        nome_guerra: 'GERENTE CARLOS',
+        email: 'gerente1@abiatar.test',
+        password_hash: defaultPasswordHash,
+        role: 'gerencia_level_2',
+        status: 'active',
+        must_change_password: false,
+        leads_paused: false,
+      });
+      const savedGerente1 = await this.userRepository.save(gerente1);
+
+      // Gerente 2
+      const gerente2 = this.userRepository.create({
+        tenant_id: tenantId,
+        name: 'Mariana Souza Santos',
+        nome_guerra: 'GERENTE MARIANA',
+        email: 'gerente2@abiatar.test',
+        password_hash: defaultPasswordHash,
+        role: 'gerencia_level_2',
+        status: 'active',
+        must_change_password: false,
+        leads_paused: false,
+      });
+      const savedGerente2 = await this.userRepository.save(gerente2);
+
+      // 4. Cria os Corretores
+      // Corretor 1 (Abaixo de Gerente 1) - CRECI Pleno
+      const corretor1 = this.userRepository.create({
+        tenant_id: tenantId,
+        name: 'Lucas Oliveira Costa',
+        nome_guerra: 'LUCAS OLIVEIRA',
+        email: 'corretor1@abiatar.test',
+        password_hash: defaultPasswordHash,
+        role: 'corretor_level_3',
+        manager_id: savedGerente1.id,
+        creci: '184920-F',
+        broker_stage: 'corretor_creci',
+        status: 'active',
+        must_change_password: false,
+        leads_paused: false,
+      });
+      const savedCorretor1 = await this.userRepository.save(corretor1);
+
+      // Corretor 2 (Abaixo de Gerente 1) - Estagiário
+      const corretor2 = this.userRepository.create({
+        tenant_id: tenantId,
+        name: 'Fernanda Lima Rocha',
+        nome_guerra: 'FERNANDA LIMA',
+        email: 'corretor2@abiatar.test',
+        password_hash: defaultPasswordHash,
+        role: 'corretor_level_3',
+        manager_id: savedGerente1.id,
+        creci: 'EST-45892',
+        broker_stage: 'estagiario',
+        status: 'active',
+        must_change_password: false,
+        leads_paused: false,
+      });
+      const savedCorretor2 = await this.userRepository.save(corretor2);
+
+      // Corretor 3 (Abaixo de Gerente 2) - CRECI Pleno
+      const corretor3 = this.userRepository.create({
+        tenant_id: tenantId,
+        name: 'Rafael Mendes Alves',
+        nome_guerra: 'RAFAEL MENDES',
+        email: 'corretor3@abiatar.test',
+        password_hash: defaultPasswordHash,
+        role: 'corretor_level_3',
+        manager_id: savedGerente2.id,
+        creci: '219403-F',
+        broker_stage: 'corretor_creci',
+        status: 'active',
+        must_change_password: false,
+        leads_paused: false,
+      });
+      const savedCorretor3 = await this.userRepository.save(corretor3);
+
+      // Recepção de apoio para testes no estande
+      const recepcao = this.userRepository.create({
+        tenant_id: tenantId,
+        name: 'Camila Recepção',
+        nome_guerra: 'RECEPCAO',
+        email: 'recepcao@abiatar.test',
+        password_hash: defaultPasswordHash,
+        role: 'recepcao_level_3',
+        status: 'active',
+        must_change_password: false,
+      });
+      const savedRecepcao = await this.userRepository.save(recepcao);
+
+      return {
+        message: 'Base limpa e pulverizada com sucesso!',
+        tenant: tenant.name,
+        director: director?.email || 'diretor@abiatar.test',
+        managers: [
+          { id: savedGerente1.id, name: savedGerente1.name, nomeGuerra: savedGerente1.nome_guerra, email: savedGerente1.email },
+          { id: savedGerente2.id, name: savedGerente2.name, nomeGuerra: savedGerente2.nome_guerra, email: savedGerente2.email },
+        ],
+        brokers: [
+          { id: savedCorretor1.id, name: savedCorretor1.name, nomeGuerra: savedCorretor1.nome_guerra, email: savedCorretor1.email, manager: 'GERENTE CARLOS (gerente1@abiatar.test)', creci: savedCorretor1.creci, stage: savedCorretor1.broker_stage },
+          { id: savedCorretor2.id, name: savedCorretor2.name, nomeGuerra: savedCorretor2.nome_guerra, email: savedCorretor2.email, manager: 'GERENTE CARLOS (gerente1@abiatar.test)', creci: savedCorretor2.creci, stage: savedCorretor2.broker_stage },
+          { id: savedCorretor3.id, name: savedCorretor3.name, nomeGuerra: savedCorretor3.nome_guerra, email: savedCorretor3.email, manager: 'GERENTE MARIANA (gerente2@abiatar.test)', creci: savedCorretor3.creci, stage: savedCorretor3.broker_stage },
+        ],
+        reception: { id: savedRecepcao.id, email: savedRecepcao.email },
+        defaultPassword: 'Todas as contas configuradas com senha: 12345678',
+      };
+    } catch (err: any) {
+      console.error('[SEED ERROR]', err);
+      throw new BadRequestException(err?.message || 'Falha ao executar limpeza e seed da base.');
     }
-
-    // 3. Cria os 2 Gerentes
-    // Gerente 1
-    const gerente1 = this.userRepository.create({
-      tenant_id: tenantId,
-      name: 'Carlos Roberto Silva',
-      nome_guerra: 'GERENTE CARLOS',
-      email: 'gerente1@abiatar.test',
-      password_hash: defaultPasswordHash,
-      role: 'gerencia_level_2',
-      status: 'active',
-      must_change_password: false,
-      leads_paused: false,
-    });
-    const savedGerente1 = await this.userRepository.save(gerente1);
-
-    // Gerente 2
-    const gerente2 = this.userRepository.create({
-      tenant_id: tenantId,
-      name: 'Mariana Souza Santos',
-      nome_guerra: 'GERENTE MARIANA',
-      email: 'gerente2@abiatar.test',
-      password_hash: defaultPasswordHash,
-      role: 'gerencia_level_2',
-      status: 'active',
-      must_change_password: false,
-      leads_paused: false,
-    });
-    const savedGerente2 = await this.userRepository.save(gerente2);
-
-    // 4. Cria os Corretores
-    // Corretor 1 (Abaixo de Gerente 1) - CRECI Pleno
-    const corretor1 = this.userRepository.create({
-      tenant_id: tenantId,
-      name: 'Lucas Oliveira Costa',
-      nome_guerra: 'LUCAS OLIVEIRA',
-      email: 'corretor1@abiatar.test',
-      password_hash: defaultPasswordHash,
-      role: 'corretor_level_3',
-      manager_id: savedGerente1.id,
-      creci: '184920-F',
-      broker_stage: 'corretor_creci',
-      status: 'active',
-      must_change_password: false,
-      leads_paused: false,
-    });
-    const savedCorretor1 = await this.userRepository.save(corretor1);
-
-    // Corretor 2 (Abaixo de Gerente 1) - Estagiário
-    const corretor2 = this.userRepository.create({
-      tenant_id: tenantId,
-      name: 'Fernanda Lima Rocha',
-      nome_guerra: 'FERNANDA LIMA',
-      email: 'corretor2@abiatar.test',
-      password_hash: defaultPasswordHash,
-      role: 'corretor_level_3',
-      manager_id: savedGerente1.id,
-      creci: 'EST-45892',
-      broker_stage: 'estagiario',
-      status: 'active',
-      must_change_password: false,
-      leads_paused: false,
-    });
-    const savedCorretor2 = await this.userRepository.save(corretor2);
-
-    // Corretor 3 (Abaixo de Gerente 2) - CRECI Pleno
-    const corretor3 = this.userRepository.create({
-      tenant_id: tenantId,
-      name: 'Rafael Mendes Alves',
-      nome_guerra: 'RAFAEL MENDES',
-      email: 'corretor3@abiatar.test',
-      password_hash: defaultPasswordHash,
-      role: 'corretor_level_3',
-      manager_id: savedGerente2.id,
-      creci: '219403-F',
-      broker_stage: 'corretor_creci',
-      status: 'active',
-      must_change_password: false,
-      leads_paused: false,
-    });
-    const savedCorretor3 = await this.userRepository.save(corretor3);
-
-    // Recepção de apoio para testes no estande
-    const recepcao = this.userRepository.create({
-      tenant_id: tenantId,
-      name: 'Camila Recepção',
-      nome_guerra: 'RECEPCAO',
-      email: 'recepcao@abiatar.test',
-      password_hash: defaultPasswordHash,
-      role: 'recepcao_level_3',
-      status: 'active',
-      must_change_password: false,
-    });
-    const savedRecepcao = await this.userRepository.save(recepcao);
-
-    return {
-      message: 'Base limpa e pulverizada com sucesso!',
-      tenant: tenant.name,
-      director: director?.email || 'diretor@abiatar.test',
-      managers: [
-        { id: savedGerente1.id, name: savedGerente1.name, nomeGuerra: savedGerente1.nome_guerra, email: savedGerente1.email },
-        { id: savedGerente2.id, name: savedGerente2.name, nomeGuerra: savedGerente2.nome_guerra, email: savedGerente2.email },
-      ],
-      brokers: [
-        { id: savedCorretor1.id, name: savedCorretor1.name, nomeGuerra: savedCorretor1.nome_guerra, email: savedCorretor1.email, manager: 'GERENTE CARLOS (gerente1@abiatar.test)', creci: savedCorretor1.creci, stage: savedCorretor1.broker_stage },
-        { id: savedCorretor2.id, name: savedCorretor2.name, nomeGuerra: savedCorretor2.nome_guerra, email: savedCorretor2.email, manager: 'GERENTE CARLOS (gerente1@abiatar.test)', creci: savedCorretor2.creci, stage: savedCorretor2.broker_stage },
-        { id: savedCorretor3.id, name: savedCorretor3.name, nomeGuerra: savedCorretor3.nome_guerra, email: savedCorretor3.email, manager: 'GERENTE MARIANA (gerente2@abiatar.test)', creci: savedCorretor3.creci, stage: savedCorretor3.broker_stage },
-      ],
-      reception: { id: savedRecepcao.id, email: savedRecepcao.email },
-      defaultPassword: 'Todas as contas configuradas com senha: 12345678',
-    };
   }
 }

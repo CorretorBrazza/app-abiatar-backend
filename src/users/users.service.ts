@@ -992,4 +992,100 @@ export class UsersService implements OnModuleInit {
       throw new BadRequestException(err?.message || 'Falha ao executar limpeza e seed da base.');
     }
   }
+
+  async cleanForFieldTest(tenantId: string, actor: { id: string; role: string }) {
+    if (actor.role !== 'diretoria_level_1' && actor.role !== 'platform_admin_level_0') {
+      throw new BadRequestException('Apenas a Diretoria pode preparar o ambiente para testes em campo.');
+    }
+
+    const tenant = await this.tenantRepository.findOne({ where: { id: tenantId } });
+    if (!tenant) throw new NotFoundException('Tenant não encontrado.');
+
+    try {
+      const defaultPasswordHash = await bcrypt.hash('12345678', 10);
+      
+      // 1. Garante Diretor ativo
+      let director = await this.userRepository.findOne({
+        where: { tenant_id: tenantId, role: 'diretoria_level_1' },
+      });
+      if (director) {
+        director.password_hash = defaultPasswordHash;
+        director.must_change_password = false;
+        director.status = 'active';
+        director.removed_at = null;
+        await this.userRepository.save(director);
+      }
+      const directorId = director?.id || actor.id;
+
+      // 2. Garante Recepção ativa
+      let recepcao = await this.userRepository.findOne({
+        where: { tenant_id: tenantId, email: 'recepcao@abiatar.test' },
+      });
+      if (!recepcao) {
+        recepcao = this.userRepository.create({
+          tenant_id: tenantId,
+          name: 'Recepção Central',
+          nome_guerra: 'RECEPCAO',
+          email: 'recepcao@abiatar.test',
+          password_hash: defaultPasswordHash,
+          role: 'recepcao_level_3',
+          status: 'active',
+          must_change_password: false,
+          leads_paused: false,
+        });
+        await this.userRepository.save(recepcao);
+      } else {
+        recepcao.password_hash = defaultPasswordHash;
+        recepcao.must_change_password = false;
+        recepcao.status = 'active';
+        recepcao.removed_at = null;
+        await this.userRepository.save(recepcao);
+      }
+
+      // 3. Limpa dependências
+      await this.userRepository.query(`UPDATE booths SET manager_id = NULL, published_by = $2 WHERE tenant_id = $1`, [tenantId, directorId]);
+      await this.userRepository.query(`UPDATE booth_rule_sets SET created_by = $2 WHERE tenant_id = $1`, [tenantId, directorId]);
+      await this.userRepository.query(`UPDATE users SET manager_id = NULL WHERE tenant_id = $1`, [tenantId]);
+      await this.userRepository.query(`UPDATE booth_holidays SET created_by = $2 WHERE tenant_id = $1`, [tenantId, directorId]);
+      await this.userRepository.query(`UPDATE booth_special_schedules SET created_by = $2 WHERE tenant_id = $1`, [tenantId, directorId]);
+      await this.userRepository.query(`UPDATE audit_logs SET actor_user_id = $2 WHERE tenant_id = $1`, [tenantId, directorId]);
+      await this.userRepository.query(`DELETE FROM dead_mans_switch_logs WHERE tenant_id = $1`, [tenantId]);
+      await this.userRepository.query(`DELETE FROM presences WHERE tenant_id = $1`, [tenantId]);
+      await this.userRepository.query(`DELETE FROM message_recipients WHERE tenant_id = $1`, [tenantId]);
+      await this.userRepository.query(`DELETE FROM messages WHERE tenant_id = $1`, [tenantId]);
+      await this.userRepository.query(`DELETE FROM manager_onboarding_links WHERE tenant_id = $1`, [tenantId]);
+      await this.userRepository.query(`DELETE FROM push_device_tokens WHERE tenant_id = $1`, [tenantId]);
+
+      // 4. Exclui TODOS os gerentes e corretores do tenant
+      await this.userRepository.query(
+        `DELETE FROM users WHERE tenant_id = $1 AND role IN ('gerencia_level_2', 'corretor_level_3')`,
+        [tenantId],
+      );
+
+      // 5. Consulta usuários remanescentes
+      const remainingUsers = await this.userRepository.find({
+        where: { tenant_id: tenantId },
+        select: ['id', 'name', 'nome_guerra', 'email', 'role', 'status'],
+      });
+
+      void this.auditService.record(
+        { tenantId, actorUserId: actor.id, actorRole: actor.role },
+        {
+          action: 'USERS_CLEANED_FOR_FIELD_TEST',
+          entityType: 'USER',
+          entityId: 'bulk',
+          afterData: { remainingUsersCount: remainingUsers.length },
+          reason: 'Ambiente limpo para início dos testes em campo com corretores e gerentes reais (mantidos apenas Diretoria e Recepção)',
+        },
+      );
+
+      return {
+        message: 'Ambiente pronto para testes em campo! Todos os gerentes e corretores fictícios foram removidos. Restam apenas Diretor e Recepção.',
+        users: remainingUsers,
+      };
+    } catch (error) {
+      console.error('[CLEAN_FIELD_TEST] Falha ao limpar usuários:', error);
+      throw new BadRequestException('Falha ao limpar usuários para o teste em campo: ' + (error instanceof Error ? error.message : String(error)));
+    }
+  }
 }

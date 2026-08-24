@@ -328,4 +328,13 @@ export class UsersController {
   ) {
     return this.usersService.seedCleanHierarchy(tenantId, { id: currentUser.sub, role: currentUser.role });
   }
+
+  @Post('clean-for-field-test')
+  @UseGuards(JwtAuthGuard)
+  async cleanForFieldTest(
+    @TenantId() tenantId: string,
+    @CurrentUser() currentUser: { sub: string; role: string },
+  ) {
+    return this.usersService.cleanForFieldTest(tenantId, { id: currentUser.sub, role: currentUser.role });
+  }
 }

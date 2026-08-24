@@ -1,4 +1,4 @@
-import { Controller, Post, Get, Patch, Delete, Param, Body, UseGuards, ForbiddenException } from '@nestjs/common';
+import { Controller, Post, Get, Patch, Delete, Param, Body, UseGuards, ForbiddenException, BadRequestException } from '@nestjs/common';
 import { BoothsService } from './booths.service';
 import { CreateBoothDto } from './dto/create-booth.dto';
 import { UpdateBoothRulesDto } from './dto/update-booth-rules.dto';
@@ -14,6 +14,18 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 export class BoothsController {
   constructor(private readonly boothsService: BoothsService) {}
 
+  @Post('special-schedules')
+  async createSpecialScheduleRoot(
+    @Body() dto: CreateSpecialScheduleDto,
+    @CurrentUser() currentUser: { sub: string; role: string; email?: string },
+    @TenantId() tenantId: string,
+  ) {
+    if (!dto.boothId) {
+      throw new BadRequestException('boothId é obrigatório para cadastrar horário especial.');
+    }
+    return this.boothsService.createSpecialSchedule(dto.boothId, dto, { id: currentUser.sub, role: currentUser.role, email: currentUser.email }, tenantId);
+  }
+
   @Post(':boothId/special-schedules')
   async createSpecialSchedule(
     @Param('boothId') boothId: string,
@@ -22,6 +34,14 @@ export class BoothsController {
     @TenantId() tenantId: string,
   ) {
     return this.boothsService.createSpecialSchedule(boothId, dto, { id: currentUser.sub, role: currentUser.role, email: currentUser.email }, tenantId);
+  }
+
+  @Get('special-schedules/:boothId')
+  async listSpecialSchedulesByParam(
+    @Param('boothId') boothId: string,
+    @TenantId() tenantId: string,
+  ) {
+    return this.boothsService.listSpecialSchedules(boothId, tenantId);
   }
 
   @Get(':boothId/special-schedules')

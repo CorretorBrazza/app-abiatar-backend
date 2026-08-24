@@ -847,31 +847,8 @@ export class UsersService implements OnModuleInit {
     const tenant = await this.tenantRepository.findOne({ where: { id: tenantId } });
     if (!tenant) throw new NotFoundException('Tenant não encontrado.');
 
-    // 1. Limpa presenças antigas, logs, mensagens e links do tenant
-    await this.userRepository.query(`
-      DELETE FROM presences WHERE tenant_id = $1;
-      DELETE FROM dead_man_logs WHERE tenant_id = $1;
-      DELETE FROM message_recipients WHERE tenant_id = $1;
-      DELETE FROM messages WHERE tenant_id = $1;
-      DELETE FROM onboarding_links WHERE tenant_id = $1;
-      DELETE FROM push_device_tokens WHERE tenant_id = $1;
-    `, [tenantId]);
-
-    // 2. Remove todos os usuários do tenant exceto o diretor@abiatar.test
+    // 1. Garante o diretor antes de tudo
     const defaultPasswordHash = await bcrypt.hash('12345678', 10);
-
-    const nonDirectorUsers = await this.userRepository.find({
-      where: {
-        tenant_id: tenantId,
-        email: Not('diretor@abiatar.test'),
-      },
-    });
-
-    for (const u of nonDirectorUsers) {
-      await this.userRepository.remove(u);
-    }
-
-    // Garante que o diretor@abiatar.test está ativo com senha 12345678
     const director = await this.userRepository.findOne({
       where: { tenant_id: tenantId, email: 'diretor@abiatar.test' },
     });
@@ -881,6 +858,25 @@ export class UsersService implements OnModuleInit {
       director.status = 'active';
       director.removed_at = null;
       await this.userRepository.save(director);
+    }
+    const directorId = director?.id || actor.id;
+
+    // 2. Limpa tabelas dependentes em ordem correta
+    try {
+      await this.userRepository.query(`UPDATE booths SET manager_id = NULL WHERE tenant_id = $1`, [tenantId]);
+      await this.userRepository.query(`UPDATE users SET manager_id = NULL WHERE tenant_id = $1`, [tenantId]);
+      await this.userRepository.query(`UPDATE booth_holidays SET created_by = $2 WHERE tenant_id = $1`, [tenantId, directorId]);
+      await this.userRepository.query(`UPDATE audit_logs SET actor_user_id = $2 WHERE tenant_id = $1`, [tenantId, directorId]);
+      await this.userRepository.query(`DELETE FROM booth_receptionists WHERE tenant_id = $1`, [tenantId]);
+      await this.userRepository.query(`DELETE FROM dead_man_logs WHERE tenant_id = $1`, [tenantId]);
+      await this.userRepository.query(`DELETE FROM presences WHERE tenant_id = $1`, [tenantId]);
+      await this.userRepository.query(`DELETE FROM message_recipients WHERE tenant_id = $1`, [tenantId]);
+      await this.userRepository.query(`DELETE FROM messages WHERE tenant_id = $1`, [tenantId]);
+      await this.userRepository.query(`DELETE FROM onboarding_links WHERE tenant_id = $1`, [tenantId]);
+      await this.userRepository.query(`DELETE FROM push_device_tokens WHERE tenant_id = $1`, [tenantId]);
+      await this.userRepository.query(`DELETE FROM users WHERE tenant_id = $1 AND email != 'diretor@abiatar.test'`, [tenantId]);
+    } catch (cleanErr) {
+      console.error('[SEED] Erro ao limpar tabelas filhas:', cleanErr);
     }
 
     // 3. Cria os 2 Gerentes

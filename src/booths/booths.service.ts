@@ -10,11 +10,13 @@ import { CreateBoothDto } from './dto/create-booth.dto';
 import { UpdateBoothDto } from './dto/update-booth.dto';
 import { BoothRuleSet } from './entities/booth-rule-set.entity';
 import { BoothHoliday } from './entities/booth-holiday.entity';
+import { BoothSpecialSchedule } from './entities/booth-special-schedule.entity';
 import { UpdateBoothRulesDto } from './dto/update-booth-rules.dto';
 import { CreateBoothHolidayDto } from './dto/create-booth-holiday.dto';
+import { CreateSpecialScheduleDto } from './dto/create-special-schedule.dto';
 import { AuditService } from '../audit/audit.service';
 import { RealtimeService } from '../realtime/realtime.service';
-import { getNowInTimezone, timeStringToMinutes, minutesToTimeString } from '../utils/timezone.util';
+import { getNowInTimezone, timeStringToMinutes, minutesToTimeString, TimezoneNow } from '../utils/timezone.util';
 
 @Injectable()
 export class BoothsService {
@@ -37,6 +39,9 @@ export class BoothsService {
     @InjectRepository(BoothHoliday)
     private holidayRepository: Repository<BoothHoliday>,
 
+    @InjectRepository(BoothSpecialSchedule)
+    private specialScheduleRepository: Repository<BoothSpecialSchedule>,
+
     private readonly auditService: AuditService,
     private readonly realtimeService: RealtimeService,
   ) {}
@@ -56,10 +61,25 @@ async onModuleInit() {
         updated_at timestamp NOT NULL DEFAULT now()
       );
       CREATE INDEX IF NOT EXISTS idx_booth_holidays_tenant_date ON booth_holidays(tenant_id, date);
+
+      CREATE TABLE IF NOT EXISTS booth_special_schedules (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        tenant_id uuid NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+        booth_id uuid NOT NULL REFERENCES booths(id) ON DELETE CASCADE,
+        scope varchar(20) NOT NULL DEFAULT 'recurring',
+        day_of_week int,
+        specific_date varchar(10),
+        description varchar(150) NOT NULL,
+        roleta_time varchar(5) NOT NULL DEFAULT '12:00',
+        created_by uuid REFERENCES users(id) ON DELETE SET NULL,
+        created_at timestamp NOT NULL DEFAULT now(),
+        updated_at timestamp NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS idx_booth_special_schedules_tenant_booth ON booth_special_schedules(tenant_id, booth_id);
     `);
-    console.log('[BOOTHS] Schema auto-healing de booth_holidays garantido com sucesso.');
+    console.log('[BOOTHS] Schema auto-healing de booth_holidays e booth_special_schedules garantido com sucesso.');
   } catch (err) {
-    console.error('[BOOTHS] Aviso ao executar auto-healing de booth_holidays:', err);
+    console.error('[BOOTHS] Aviso ao executar auto-healing de tabelas de plantão:', err);
   }
 }
 
@@ -256,6 +276,154 @@ async isHoliday(boothId: string, tenantId: string, targetDate: Date = new Date()
   return { isHoliday: false };
 }
 
+  async createSpecialSchedule(
+    boothId: string,
+    dto: CreateSpecialScheduleDto,
+    actor: { id: string; role: string; email?: string },
+    tenantId: string,
+  ) {
+    if (actor.role !== 'diretoria_level_1' && actor.role !== 'platform_admin_level_0') {
+      throw new BadRequestException('Apenas a Diretoria pode configurar horários especiais.');
+    }
+
+    const booth = await this.boothRepository.findOne({ where: { id: boothId, tenant_id: tenantId } });
+    if (!booth) throw new NotFoundException('Plantão não encontrado.');
+
+    let dayOfWeek: number | null = dto.dayOfWeek !== undefined && dto.dayOfWeek !== null ? Number(dto.dayOfWeek) : null;
+    let specificDate: string | null = dto.specificDate ? this.normalizeDateString(dto.specificDate) : null;
+
+    if (dto.scope === 'one_off' && !specificDate) {
+      if (dayOfWeek !== null) {
+        const tzNow = getNowInTimezone('America/Sao_Paulo');
+        const todayDay = tzNow.dayOfWeek;
+        let daysUntil = (dayOfWeek - todayDay + 7) % 7;
+        if (daysUntil === 0) daysUntil = 7; // Próxima ocorrência
+        const d = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Sao_Paulo' }));
+        d.setDate(d.getDate() + daysUntil);
+        const y = d.getFullYear();
+        const m = String(d.getMonth() + 1).padStart(2, '0');
+        const day = String(d.getDate()).padStart(2, '0');
+        specificDate = `${y}-${m}-${day}`;
+      } else {
+        throw new BadRequestException('Para horário especial pontual (próximo), informe o dia da semana ou a data.');
+      }
+    }
+
+    if (dto.scope === 'recurring' && (dayOfWeek === null || dayOfWeek < 0 || dayOfWeek > 6)) {
+      throw new BadRequestException('Para horário especial recorrente, selecione o dia da semana válido (0 a 6).');
+    }
+
+    const schedule = this.specialScheduleRepository.create({
+      tenant_id: tenantId,
+      booth_id: boothId,
+      scope: dto.scope,
+      day_of_week: dayOfWeek,
+      specific_date: specificDate,
+      description: dto.description.trim() || 'Horário Especial do Plantão',
+      roleta_time: dto.roletaTime.trim(),
+      created_by: actor.id,
+    });
+
+    const saved = await this.specialScheduleRepository.save(schedule);
+
+    void this.auditService.record(
+      { tenantId, boothId, actorUserId: actor.id, actorRole: actor.role, actorEmail: actor.email },
+      {
+        action: 'SPECIAL_SCHEDULE_CREATED',
+        entityType: 'BOOTH_SPECIAL_SCHEDULE',
+        entityId: saved.id,
+        afterData: saved as unknown as Record<string, unknown>,
+        reason: `Horário Especial cadastrado no plantão ${booth.name}: ${dto.roletaTime} (${dto.scope === 'one_off' ? `Próximo: ${specificDate}` : `Recorrente dia ${dayOfWeek}`})`,
+      },
+    );
+
+    this.realtimeService.publish({
+      eventType: 'booth.rules_updated',
+      tenantId,
+      aggregateId: boothId,
+      payload: { boothId, specialScheduleId: saved.id, roletaTime: saved.roleta_time },
+    });
+
+    return {
+      message: 'Horário Especial cadastrado com sucesso!',
+      schedule: saved,
+    };
+  }
+
+  async listSpecialSchedules(boothId: string, tenantId: string) {
+    return this.specialScheduleRepository.find({
+      where: { booth_id: boothId, tenant_id: tenantId },
+      order: { created_at: 'DESC' },
+    });
+  }
+
+  async deleteSpecialSchedule(
+    scheduleId: string,
+    actor: { id: string; role: string; email?: string },
+    tenantId: string,
+  ) {
+    if (actor.role !== 'diretoria_level_1' && actor.role !== 'platform_admin_level_0') {
+      throw new BadRequestException('Apenas a Diretoria pode remover horários especiais.');
+    }
+
+    const schedule = await this.specialScheduleRepository.findOne({
+      where: { id: scheduleId, tenant_id: tenantId },
+    });
+    if (!schedule) throw new NotFoundException('Horário especial não encontrado.');
+
+    const boothId = schedule.booth_id;
+    const before = { ...schedule };
+    await this.specialScheduleRepository.remove(schedule);
+
+    void this.auditService.record(
+      { tenantId, boothId, actorUserId: actor.id, actorRole: actor.role, actorEmail: actor.email },
+      {
+        action: 'SPECIAL_SCHEDULE_DELETED',
+        entityType: 'BOOTH_SPECIAL_SCHEDULE',
+        entityId: scheduleId,
+        beforeData: before as unknown as Record<string, unknown>,
+        reason: `Horário Especial removido do plantão`,
+      },
+    );
+
+    this.realtimeService.publish({
+      eventType: 'booth.rules_updated',
+      tenantId,
+      aggregateId: boothId,
+      payload: { boothId, scheduleId },
+    });
+
+    return { message: 'Horário especial removido com sucesso.' };
+  }
+
+  async getSpecialSchedule(
+    boothId: string,
+    tenantId: string,
+    tzNow: TimezoneNow,
+  ): Promise<{ isSpecial: boolean; name?: string; roletaTime?: string; scope?: string }> {
+    try {
+      // 1. Soberania Máxima: Horário Especial Pontual / Específico na Data de Hoje (one_off)
+      const oneOff = await this.specialScheduleRepository.findOne({
+        where: { booth_id: boothId, tenant_id: tenantId, scope: 'one_off', specific_date: tzNow.dateStr },
+      });
+      if (oneOff) {
+        return { isSpecial: true, name: oneOff.description, roletaTime: oneOff.roleta_time, scope: 'one_off' };
+      }
+
+      // 2. Soberania Recorrente: Horário Especial para o Dia da Semana de Hoje (recurring)
+      const recurring = await this.specialScheduleRepository.findOne({
+        where: { booth_id: boothId, tenant_id: tenantId, scope: 'recurring', day_of_week: tzNow.dayOfWeek },
+      });
+      if (recurring) {
+        return { isSpecial: true, name: recurring.description, roletaTime: recurring.roleta_time, scope: 'recurring' };
+      }
+    } catch (error) {
+      console.error('[SPECIAL_SCHEDULE] Erro ao consultar horários especiais:', error instanceof Error ? error.message : String(error));
+    }
+
+    return { isSpecial: false };
+  }
+
   // 1. Cadastra um novo plantão de vendas com seus respectivos Wi-Fis [7]
   async create(dto: CreateBoothDto, tenantId: string): Promise<Booth> {
     // Cria o registro do Plantão vinculado ao tenant
@@ -408,10 +576,17 @@ async isHoliday(boothId: string, tenantId: string, targetDate: Date = new Date()
 
       const tzNow = getNowInTimezone('America/Sao_Paulo');
       const nowMinutes = tzNow.nowMinutes;
+      const special = await this.getSpecialSchedule(booth.id, booth.tenant_id, tzNow);
       const holiday = await this.isHoliday(booth.id, booth.tenant_id, new Date());
 
       let roletaTimes: Array<{ name: string; time: string }> = [];
-      if (holiday.isHoliday) {
+      if (special.isSpecial) {
+        // Horário Especial é SOBERANO (Roleta Única)
+        roletaTimes = [{
+          name: `Horário Especial (${special.name || 'Roleta Única'})`,
+          time: special.roletaTime || '12:00',
+        }];
+      } else if (holiday.isHoliday) {
         roletaTimes = [{
           name: `Roleta Feriado (${holiday.name || 'Roleta Única'})`,
           time: holiday.roletaTime || rules.roleta_weekend_time || '09:00',

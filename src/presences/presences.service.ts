@@ -8,6 +8,7 @@ import { User } from '../users/user.entity';
 import { Booth } from '../booths/entities/booth.entity';
 import { BoothRuleSet } from '../booths/entities/booth-rule-set.entity';
 import { BoothHoliday } from '../booths/entities/booth-holiday.entity';
+import { BoothSpecialSchedule } from '../booths/entities/booth-special-schedule.entity';
 import { DeadManLog } from './entities/dead-man-log.entity';
 import { CheckInDto } from './dto/check-in.dto';
 import { PingResponseDto } from './dto/ping-response.dto';
@@ -15,7 +16,7 @@ import { Message } from '../messages/entities/message.entity'; // <-- ADICIONE E
 import { MessageRecipient } from '../messages/entities/message-recipient.entity';
 import { NotificationsService } from '../notifications/notifications.service';
 import { RealtimeService } from '../realtime/realtime.service';
-import { getNowInTimezone, timeStringToMinutes, minutesToTimeString } from '../utils/timezone.util';
+import { getNowInTimezone, timeStringToMinutes, minutesToTimeString, TimezoneNow } from '../utils/timezone.util';
 
 @Injectable()
 export class PresencesService {
@@ -31,6 +32,9 @@ export class PresencesService {
 
     @InjectRepository(BoothHoliday)
     private holidayRepository: Repository<BoothHoliday>,
+
+    @InjectRepository(BoothSpecialSchedule)
+    private specialScheduleRepository: Repository<BoothSpecialSchedule>,
 
     @InjectRepository(DeadManLog)
     private logRepository: Repository<DeadManLog>,
@@ -68,6 +72,33 @@ export class PresencesService {
       console.error('[PRESENCES] Erro ao verificar feriado:', err);
     }
     return { isHoliday: false };
+  }
+
+  private async getSpecialScheduleForBooth(
+    boothId: string,
+    tenantId: string,
+    tzNow: TimezoneNow,
+  ): Promise<{ isSpecial: boolean; name?: string; roletaTime?: string; scope?: string }> {
+    try {
+      // 1. Soberania Máxima: Horário Especial Pontual / Específico na Data de Hoje (one_off)
+      const oneOff = await this.specialScheduleRepository.findOne({
+        where: { booth_id: boothId, tenant_id: tenantId, scope: 'one_off', specific_date: tzNow.dateStr },
+      });
+      if (oneOff) {
+        return { isSpecial: true, name: oneOff.description, roletaTime: oneOff.roleta_time, scope: 'one_off' };
+      }
+
+      // 2. Soberania Recorrente: Horário Especial para o Dia da Semana de Hoje (recurring)
+      const recurring = await this.specialScheduleRepository.findOne({
+        where: { booth_id: boothId, tenant_id: tenantId, scope: 'recurring', day_of_week: tzNow.dayOfWeek },
+      });
+      if (recurring) {
+        return { isSpecial: true, name: recurring.description, roletaTime: recurring.roleta_time, scope: 'recurring' };
+      }
+    } catch (err) {
+      console.error('[PRESENCES] Erro ao verificar horário especial:', err);
+    }
+    return { isSpecial: false };
   }
 
   // 1. Algoritmo Privado de Haversine (Cálculo de Distância Geográfica)
@@ -114,33 +145,29 @@ export class PresencesService {
       throw new BadRequestException('Você já possui um check-in ativo. Finalize o turno atual antes de iniciar outro.');
     }
 
+    // B. Busca o plantão de vendas solicitado e suas regras vigentes
     const booth = await this.boothRepository.findOne({
       where: { id: dto.boothId, tenant_id: tenantId },
       relations: { wifis: true },
     });
 
     if (!booth) {
-      throw new NotFoundException('Plantão de vendas não encontrado ou sem autorização.');
+      throw new NotFoundException('Plantão de vendas não localizado.');
     }
+
+    // Regra: Bloqueia check-in em estandes não publicados
     if (booth.lifecycle_status !== 'published') {
-      throw new BadRequestException('Este plantão não está publicado para novos Check-ins.');
+      throw new BadRequestException('Check-in não permitido. Este plantão de vendas não está publicado para atendimento.');
     }
 
     const ruleSet = await this.getRuleSetForBooth(booth);
-    const eligibility = await this.checkWeekendEligibility(brokerId, tenantId, ruleSet);
-    if (!eligibility.checkInAllowedToday) {
-      const dayName = new Date().getDay() === 6 ? 'Sábado' : 'Domingo';
-      throw new BadRequestException(
-        eligibility.enabled === false
-          ? 'O trabalho de fim de semana não está habilitado para este plantão.'
-          : `Check-in bloqueado para este ${dayName}. Para trabalhar no fim de semana, é necessário acumular no mínimo ${eligibility.required} períodos de Segunda a Sexta. Você acumulou apenas ${eligibility.accumulated} períodos nesta semana.`,
-      );
-    }
 
-    let isPresenceValid = false;
+    // C. Validação de Proximidade (DUPLA CAMADA: Wi-Fi do Plantão ou GPS) [7]
+    let isLocationValid = false;
     let methodUsed = '';
     let distanceCalculated = 0;
 
+    // 1ª Camada: Validação por BSSID/SSID de Wi-Fi Cadastrado no Plantão
     if (dto.ssid && booth.wifis && booth.wifis.length > 0) {
       const userSsid = dto.ssid;
       const wifiMatch = booth.wifis.some(
@@ -148,29 +175,31 @@ export class PresencesService {
       );
 
       if (wifiMatch) {
-        isPresenceValid = true;
-        methodUsed = 'Wi-Fi Corporativo';
+        isLocationValid = true;
+        methodUsed = `Wi-Fi Corporativo (${userSsid})`;
       }
     }
 
-    if (!isPresenceValid) {
-      const boothLat = Number(booth.latitude);
-      const boothLon = Number(booth.longitude);
+    // 2ª Camada: Validação por Raio Geográfico (GPS)
+    if (!isLocationValid) {
+      if (dto.latitude === undefined || dto.longitude === undefined) {
+        throw new BadRequestException('Coordenadas GPS não informadas e Wi-Fi do plantão não detectado.');
+      }
 
       distanceCalculated = this.calculateDistanceInMeters(
         dto.latitude,
         dto.longitude,
-        boothLat,
-        boothLon,
+        Number(booth.latitude),
+        Number(booth.longitude),
       );
 
       if (distanceCalculated <= ruleSet.gps_radius_meters) {
-        isPresenceValid = true;
-        methodUsed = 'GPS de Alta Precisão';
+        isLocationValid = true;
+        methodUsed = `GPS (${Math.round(distanceCalculated)}m)`;
       }
     }
 
-    if (!isPresenceValid) {
+    if (!isLocationValid) {
       throw new BadRequestException(
         `Check-in recusado. Você está fora da área do plantão. Distância calculada: ${Math.round(distanceCalculated)} metros. Limite permitido: ${ruleSet.gps_radius_meters} metros.`,
       );
@@ -179,10 +208,17 @@ export class PresencesService {
     const tzNow = getNowInTimezone('America/Sao_Paulo');
     const nowMinutes = tzNow.nowMinutes;
     const now = new Date();
+    const specialInfo = await this.getSpecialScheduleForBooth(dto.boothId, tenantId, tzNow);
     const holidayInfo = await this.getHolidayForBoothAndDate(dto.boothId, tenantId, now);
 
     let roletaTimes: Array<{ name: string; time: string }> = [];
-    if (holidayInfo.isHoliday) {
+    if (specialInfo.isSpecial) {
+      // Horário Especial é SOBERANO (Roleta Única)
+      roletaTimes = [{
+        name: `Horário Especial (${specialInfo.name || 'Roleta Única'})`,
+        time: specialInfo.roletaTime || '12:00',
+      }];
+    } else if (holidayInfo.isHoliday) {
       roletaTimes = [{
         name: `Roleta Feriado (${holidayInfo.name || 'Roleta Única'})`,
         time: holidayInfo.roletaTime || ruleSet.roleta_weekend_time || '09:00',
@@ -403,10 +439,17 @@ export class PresencesService {
 
     if (activePresence && activeBooth) {
       const tzNow = getNowInTimezone('America/Sao_Paulo');
+      const specialInfo = await this.getSpecialScheduleForBooth(activeBooth.id, tenantId, tzNow);
       const holidayInfo = await this.getHolidayForBoothAndDate(activeBooth.id, tenantId, new Date());
 
       let roletaTimes: Array<{ name: string; time: string }> = [];
-      if (holidayInfo.isHoliday) {
+      if (specialInfo.isSpecial) {
+        // Horário Especial é SOBERANO (Roleta Única)
+        roletaTimes = [{
+          name: `Horário Especial (${specialInfo.name || 'Roleta Única'})`,
+          time: specialInfo.roletaTime || '12:00',
+        }];
+      } else if (holidayInfo.isHoliday) {
         roletaTimes = [{
           name: `Roleta Feriado (${holidayInfo.name || 'Roleta Única'})`,
           time: holidayInfo.roletaTime || activeRuleSet?.roleta_weekend_time || '09:00',
@@ -752,10 +795,17 @@ export class PresencesService {
 
     for (const booth of booths) {
       const ruleSet = await this.getRuleSetForBooth(booth);
+      const specialInfo = await this.getSpecialScheduleForBooth(booth.id, booth.tenant_id, tzNow);
       const holidayInfo = await this.getHolidayForBoothAndDate(booth.id, booth.tenant_id, new Date());
 
       let roletaTimes: Array<{ name: string; time: string }> = [];
-      if (holidayInfo.isHoliday) {
+      if (specialInfo.isSpecial) {
+        // Horário Especial é SOBERANO (Roleta Única)
+        roletaTimes = [{
+          name: `Horário Especial (${specialInfo.name || 'Roleta Única'})`,
+          time: specialInfo.roletaTime || '12:00',
+        }];
+      } else if (holidayInfo.isHoliday) {
         roletaTimes = [{
           name: `Roleta Feriado (${holidayInfo.name || 'Roleta Única'})`,
           time: holidayInfo.roletaTime || ruleSet.roleta_weekend_time || '09:00',

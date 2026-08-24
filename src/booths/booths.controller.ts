@@ -4,6 +4,7 @@ import { CreateBoothDto } from './dto/create-booth.dto';
 import { UpdateBoothRulesDto } from './dto/update-booth-rules.dto';
 import { UpdateBoothDto } from './dto/update-booth.dto';
 import { CreateBoothHolidayDto } from './dto/create-booth-holiday.dto';
+import { CreateSpecialScheduleDto } from './dto/create-special-schedule.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { TenantId } from '../auth/decorators/tenant-id.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -12,6 +13,33 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 @UseGuards(JwtAuthGuard) // Protege todas as rotas do controlador exigindo Token JWT Bearer
 export class BoothsController {
   constructor(private readonly boothsService: BoothsService) {}
+
+  @Post(':boothId/special-schedules')
+  async createSpecialSchedule(
+    @Param('boothId') boothId: string,
+    @Body() dto: CreateSpecialScheduleDto,
+    @CurrentUser() currentUser: { sub: string; role: string; email?: string },
+    @TenantId() tenantId: string,
+  ) {
+    return this.boothsService.createSpecialSchedule(boothId, dto, { id: currentUser.sub, role: currentUser.role, email: currentUser.email }, tenantId);
+  }
+
+  @Get(':boothId/special-schedules')
+  async listSpecialSchedules(
+    @Param('boothId') boothId: string,
+    @TenantId() tenantId: string,
+  ) {
+    return this.boothsService.listSpecialSchedules(boothId, tenantId);
+  }
+
+  @Delete('special-schedules/:scheduleId')
+  async deleteSpecialSchedule(
+    @Param('scheduleId') scheduleId: string,
+    @CurrentUser() currentUser: { sub: string; role: string; email?: string },
+    @TenantId() tenantId: string,
+  ) {
+    return this.boothsService.deleteSpecialSchedule(scheduleId, { id: currentUser.sub, role: currentUser.role, email: currentUser.email }, tenantId);
+  }
 
   @Post('holidays')
   async createHoliday(

@@ -873,7 +873,7 @@ export class UsersService implements OnModuleInit {
       await this.userRepository.query(`DELETE FROM presences WHERE tenant_id = $1`, [tenantId]);
       await this.userRepository.query(`DELETE FROM message_recipients WHERE tenant_id = $1`, [tenantId]);
       await this.userRepository.query(`DELETE FROM messages WHERE tenant_id = $1`, [tenantId]);
-      await this.userRepository.query(`DELETE FROM onboarding_links WHERE tenant_id = $1`, [tenantId]);
+      await this.userRepository.query(`DELETE FROM manager_onboarding_links WHERE tenant_id = $1`, [tenantId]);
       await this.userRepository.query(`DELETE FROM push_device_tokens WHERE tenant_id = $1`, [tenantId]);
       await this.userRepository.query(`DELETE FROM users WHERE tenant_id = $1 AND email != 'diretor@abiatar.test'`, [tenantId]);
 

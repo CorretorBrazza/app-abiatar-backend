@@ -869,7 +869,7 @@ export class UsersService implements OnModuleInit {
       await this.userRepository.query(`UPDATE booth_holidays SET created_by = $2 WHERE tenant_id = $1`, [tenantId, directorId]);
       await this.userRepository.query(`UPDATE audit_logs SET actor_user_id = $2 WHERE tenant_id = $1`, [tenantId, directorId]);
       await this.userRepository.query(`DELETE FROM booth_receptionists WHERE tenant_id = $1`, [tenantId]);
-      await this.userRepository.query(`DELETE FROM dead_man_logs WHERE tenant_id = $1`, [tenantId]);
+      await this.userRepository.query(`DELETE FROM dead_mans_switch_logs WHERE tenant_id = $1`, [tenantId]);
       await this.userRepository.query(`DELETE FROM presences WHERE tenant_id = $1`, [tenantId]);
       await this.userRepository.query(`DELETE FROM message_recipients WHERE tenant_id = $1`, [tenantId]);
       await this.userRepository.query(`DELETE FROM messages WHERE tenant_id = $1`, [tenantId]);

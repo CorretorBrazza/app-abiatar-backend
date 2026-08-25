@@ -1,4 +1,4 @@
-import { IsEmail, IsNotEmpty, IsString, MinLength } from 'class-validator';
+import { IsEmail, IsNotEmpty, IsOptional, IsString, MinLength } from 'class-validator';
 
 export class CreateReceptionistDto {
   @IsString()
@@ -15,4 +15,12 @@ export class CreateReceptionistDto {
   @IsString()
   @MinLength(8)
   passwordHash: string;
+
+  @IsOptional()
+  @IsString()
+  creci?: string;
+
+  @IsOptional()
+  @IsString()
+  brokerStage?: string;
 }

@@ -1,4 +1,4 @@
-import { IsEmail, IsString, Length } from 'class-validator';
+import { IsEmail, IsOptional, IsString, Length } from 'class-validator';
 
 export class CreateManagerDto {
   @IsString()
@@ -15,4 +15,12 @@ export class CreateManagerDto {
   @IsString()
   @Length(8, 128)
   passwordHash: string;
+
+  @IsOptional()
+  @IsString()
+  creci?: string;
+
+  @IsOptional()
+  @IsString()
+  brokerStage?: string;
 }

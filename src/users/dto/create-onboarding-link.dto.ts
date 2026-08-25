@@ -1,4 +1,4 @@
-import { IsIn, IsOptional, IsUUID } from 'class-validator';
+import { IsIn, IsNumber, IsOptional, IsUUID } from 'class-validator';
 
 export class CreateOnboardingLinkDto {
   @IsIn(['gerencia_level_2', 'corretor_level_3'])
@@ -7,4 +7,8 @@ export class CreateOnboardingLinkDto {
   @IsOptional()
   @IsUUID()
   managerId?: string;
+
+  @IsOptional()
+  @IsNumber()
+  expiresInDays?: number;
 }

@@ -458,7 +458,11 @@ export class UsersService implements OnModuleInit {
     return { message: 'Usuário removido da operação sem apagar o histórico.', userId: saved.id, role: saved.role };
   }
 
-  async updateManagementUser(userId: string, dto: { name?: string; nomeGuerra?: string }, tenantId: string) {
+  async updateManagementUser(
+    userId: string,
+    dto: { name?: string; nomeGuerra?: string; email?: string; password?: string; mustChangePassword?: boolean },
+    tenantId: string,
+  ) {
     const user = await this.userRepository.findOne({ where: { id: userId, tenant_id: tenantId, role: In(['gerencia_level_2', 'recepcao_level_3']), removed_at: IsNull() } });
     if (!user) throw new NotFoundException('Usuário de gestão não encontrado.');
     if (dto.name?.trim()) user.name = dto.name.trim();
@@ -468,9 +472,38 @@ export class UsersService implements OnModuleInit {
       if (existing) throw new BadRequestException('Este Nome de Guerra já está em uso nesta empresa.');
       user.nome_guerra = normalized;
     }
+    if (dto.email?.trim()) {
+      const normalizedEmail = dto.email.trim().toLowerCase();
+      const existingEmail = await this.userRepository.findOne({ where: { email: normalizedEmail } });
+      if (existingEmail && existingEmail.id !== userId) throw new BadRequestException('Este e-mail já está cadastrado.');
+      user.email = normalizedEmail;
+    }
+    if (dto.password) {
+      user.password_hash = await bcrypt.hash(dto.password, await bcrypt.genSalt(10));
+      user.session_version = (user.session_version || 0) + 1;
+    }
+    if (dto.mustChangePassword !== undefined) {
+      user.must_change_password = dto.mustChangePassword;
+      user.password_reset_expires_at = null;
+    }
     const saved = await this.userRepository.save(user);
-    void this.auditService.record({ tenantId }, { action: 'USER_PROFILE_UPDATED', entityType: 'USER', entityId: saved.id, afterData: { name: saved.name, nome_guerra: saved.nome_guerra, role: saved.role } });
-    return { message: 'Perfil atualizado com sucesso.', user: { id: saved.id, name: saved.name, nome_guerra: saved.nome_guerra, email: saved.email, role: saved.role } };
+    void this.auditService.record({ tenantId }, {
+      action: 'USER_PROFILE_UPDATED',
+      entityType: 'USER',
+      entityId: saved.id,
+      afterData: { name: saved.name, nome_guerra: saved.nome_guerra, email: saved.email, role: saved.role, must_change_password: saved.must_change_password },
+    });
+    return {
+      message: 'Perfil atualizado com sucesso.',
+      user: {
+        id: saved.id,
+        name: saved.name,
+        nome_guerra: saved.nome_guerra,
+        email: saved.email,
+        role: saved.role,
+        must_change_password: saved.must_change_password,
+      },
+    };
   }
 
   // 3. Gerente lista os corretores pendentes de aprovação da sua equipe

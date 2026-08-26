@@ -110,11 +110,11 @@ export class UsersController {
   @UseGuards(JwtAuthGuard)
   async updateManagementUser(
     @Param('id') userId: string,
-    @Body() dto: { name?: string; nomeGuerra?: string },
+    @Body() dto: { name?: string; nomeGuerra?: string; email?: string; password?: string; mustChangePassword?: boolean },
     @CurrentUser() currentUser: { role: string },
     @TenantId() tenantId: string,
   ) {
-    if (currentUser.role !== 'diretoria_level_1') {
+    if (!['diretoria_level_1', 'platform_admin_level_0'].includes(currentUser.role)) {
       throw new ForbiddenException('Somente a Diretoria pode editar estes cards.');
     }
     return this.usersService.updateManagementUser(userId, dto, tenantId);

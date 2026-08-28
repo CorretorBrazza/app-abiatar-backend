@@ -160,9 +160,14 @@ export class EmailService {
             <h3>📎 Documentos Anexados (${docCount})</h3>
             <p>
               ${docCount > 0 
-                ? `Foram anexados ${docCount} arquivo(s) a este e-mail para verificação (RG/CNH, CRECI e Comprovante de Residência).`
+                ? `Foram anexados ${docCount} arquivo(s) a este e-mail para verificação:`
                 : 'Nenhum arquivo anexado pelo corretor.'}
             </p>
+            ${docCount > 0 ? `
+              <ul style="margin: 10px 0 0 0; padding-left: 18px; font-size: 13px; color: #1e293b; line-height: 20px;">
+                ${(params.documents || []).map((d) => `<li><strong>${d.filename}</strong></li>`).join('')}
+              </ul>
+            ` : ''}
           </div>
 
           <p style="font-size: 13px; color: #52525b; line-height: 18px;">

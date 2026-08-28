@@ -56,10 +56,23 @@ export class UsersController {
     @CurrentUser() currentUser: { role: string },
     @TenantId() tenantId: string,
   ) {
-    if (currentUser.role !== 'diretoria_level_1') {
+    if (!['diretoria_level_1', 'platform_admin_level_0'].includes(currentUser.role)) {
       throw new ForbiddenException('Apenas a Diretoria pode criar Recepção.');
     }
     return this.usersService.createReceptionist(createReceptionistDto, tenantId);
+  }
+
+  @Post('rh')
+  @UseGuards(JwtAuthGuard)
+  async createRhUser(
+    @Body() dto: CreateManagerDto,
+    @CurrentUser() currentUser: { role: string },
+    @TenantId() tenantId: string,
+  ) {
+    if (!['diretoria_level_1', 'platform_admin_level_0'].includes(currentUser.role)) {
+      throw new ForbiddenException('Apenas a Diretoria pode criar usuários de RH.');
+    }
+    return this.usersService.createRhUser(dto, tenantId);
   }
 
   // 1. Corretor se cadastra (ROTA PÚBLICA - Sem Guard de segurança) [10]
@@ -84,10 +97,10 @@ export class UsersController {
     @Query('search') search?: string,
     @Query('status') status?: string,
   ) {
-    if (currentUser.role !== 'diretoria_level_1') {
-      throw new ForbiddenException('Somente a Diretoria pode consultar os cards de Gerentes e Recepção.');
+    if (!['diretoria_level_1', 'platform_admin_level_0'].includes(currentUser.role)) {
+      throw new ForbiddenException('Somente a Diretoria pode consultar os cards de Gerentes, Recepção e RH.');
     }
-    if (!['gerencia_level_2', 'recepcao_level_3'].includes(role)) {
+    if (!['gerencia_level_2', 'recepcao_level_3', 'rh_level_2', 'rh_level_1'].includes(role)) {
       throw new ForbiddenException('Perfil de gestão inválido.');
     }
     return this.usersService.listManagementUsers(role, tenantId, { page: Number(page), pageSize: Number(pageSize), search, status });
@@ -137,8 +150,8 @@ export class UsersController {
   @Get('managers/active')
   @UseGuards(JwtAuthGuard)
   async listActiveManagers(@CurrentUser() currentUser: { role: string }, @TenantId() tenantId: string) {
-    if (!['diretoria_level_1', 'platform_admin_level_0'].includes(currentUser.role)) {
-      throw new ForbiddenException('Somente a Diretoria pode consultar a base de gerentes para convites.');
+    if (!['diretoria_level_1', 'platform_admin_level_0', 'rh_level_2', 'rh_level_1'].includes(currentUser.role)) {
+      throw new ForbiddenException('Somente a Diretoria e RH podem consultar a base de gerentes para convites.');
     }
     return this.usersService.listActiveManagers(tenantId);
   }
@@ -167,7 +180,7 @@ export class UsersController {
     @CurrentUser() currentUser: { sub: string; role: string },
     @TenantId() tenantId: string,
   ) {
-    if (currentUser.role === 'diretoria_level_1' || currentUser.role === 'platform_admin_level_0') {
+    if (['diretoria_level_1', 'platform_admin_level_0', 'rh_level_2', 'rh_level_1'].includes(currentUser.role)) {
       return this.usersService.findPendingApprovals(null, tenantId);
     }
     const effectiveManagerId = this.resolveManagerId(managerId, currentUser);
@@ -201,8 +214,8 @@ export class UsersController {
     @Query('status') status?: string,
     @Query('managerId') managerId?: string,
   ) {
-    if (!['diretoria_level_1', 'platform_admin_level_0'].includes(currentUser.role)) {
-      throw new ForbiddenException('Somente a Diretoria pode consultar todos os Corretores do tenant.');
+    if (!['diretoria_level_1', 'platform_admin_level_0', 'rh_level_2', 'rh_level_1'].includes(currentUser.role)) {
+      throw new ForbiddenException('Somente a Diretoria e RH podem consultar os Corretores do tenant.');
     }
     return this.usersService.listActiveBrokersForDirector(tenantId, { page: Number(page), pageSize: Number(pageSize), search, status, managerId });
   }

@@ -158,6 +158,58 @@ export class UsersService implements OnModuleInit {
     };
   }
 
+  async createRhUser(dto: CreateManagerDto, tenantId: string) {
+    const normalizedNomeGuerra = this.normalizeNomeGuerra(dto.nomeGuerra);
+    const existingEmail = await this.userRepository.findOne({ where: { email: dto.email } });
+    if (existingEmail) {
+      throw new BadRequestException('Este e-mail de usuário já está cadastrado.');
+    }
+
+    const existingNomeGuerra = await this.userRepository.findOne({
+      where: { nome_guerra: Raw((alias) => `LOWER(${alias}) = LOWER(:nomeGuerra)`, { nomeGuerra: normalizedNomeGuerra }), tenant_id: tenantId },
+    });
+    if (existingNomeGuerra) {
+      throw new BadRequestException(`O nome de guerra '${normalizedNomeGuerra}' já está em uso nesta empresa.`);
+    }
+
+    const passwordHashed = await bcrypt.hash(dto.passwordHash, await bcrypt.genSalt(10));
+    const rhUser = this.userRepository.create({
+      tenant_id: tenantId,
+      name: dto.name,
+      nome_guerra: normalizedNomeGuerra,
+      email: dto.email,
+      password_hash: passwordHashed,
+      role: 'rh_level_2',
+      status: 'active',
+      must_change_password: true,
+    });
+    const savedRh = await this.userRepository.save(rhUser);
+    this.realtimeService.publish({ eventType: 'rh.created', tenantId, aggregateId: savedRh.id, payload: { userId: savedRh.id, role: savedRh.role, name: savedRh.name } });
+    void this.auditService.record({ tenantId }, {
+      action: 'USER_CREATED',
+      entityType: 'USER',
+      entityId: savedRh.id,
+      afterData: {
+        name: savedRh.name,
+        nome_guerra: savedRh.nome_guerra,
+        email: savedRh.email,
+        role: savedRh.role,
+      },
+      metadata: { createdRole: savedRh.role },
+    });
+
+    return {
+      message: 'Usuário de RH cadastrado com sucesso!',
+      user: {
+        id: savedRh.id,
+        name: savedRh.name,
+        nome_guerra: savedRh.nome_guerra,
+        email: savedRh.email,
+        role: savedRh.role,
+      },
+    };
+  }
+
   async getOnboardingInviteInfo(token: string) {
     const link = await this.linkRepository.findOne({ where: { token, valid_until: MoreThan(new Date()), is_used: false }, relations: { manager: true } });
     if (!link) throw new BadRequestException('O convite é inválido, expirou ou já foi utilizado.');
@@ -660,7 +712,7 @@ export class UsersService implements OnModuleInit {
     if (actor.role === 'gerencia_level_2' && broker.manager_id !== actor.sub) {
       throw new NotFoundException('Corretor não pertence à sua gerência.');
     }
-    if (!['diretoria_level_1', 'gerencia_level_2', 'platform_admin_level_0'].includes(actor.role)) {
+    if (!['diretoria_level_1', 'gerencia_level_2', 'platform_admin_level_0', 'rh_level_2', 'rh_level_1'].includes(actor.role)) {
       throw new BadRequestException('Perfil sem permissão para gerenciar Corretores.');
     }
     return broker;
@@ -736,8 +788,8 @@ export class UsersService implements OnModuleInit {
     actor: { sub: string; role: string },
     tenantId: string,
   ) {
-    if (!['diretoria_level_1', 'platform_admin_level_0'].includes(actor.role)) {
-      throw new ForbiddenException('Somente a Diretoria pode renovar ou promover estágios de Corretores.');
+    if (!['diretoria_level_1', 'platform_admin_level_0', 'rh_level_2', 'rh_level_1'].includes(actor.role)) {
+      throw new ForbiddenException('Somente a Diretoria e o RH podem renovar ou promover estágios de Corretores.');
     }
     const broker = await this.getBrokerForManagement(brokerId, actor, tenantId);
     const before = {

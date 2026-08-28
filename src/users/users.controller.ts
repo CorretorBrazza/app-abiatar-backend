@@ -172,6 +172,53 @@ export class UsersController {
     return this.usersService.registerManager(dto);
   }
 
+  // Triagem do RH / Diretoria: Lista corretores pendentes de validação documental
+  @Get('pending-hr-review')
+  @UseGuards(JwtAuthGuard)
+  async findPendingHrReview(
+    @CurrentUser() currentUser: { role: string },
+    @TenantId() tenantId: string,
+  ) {
+    if (!['diretoria_level_1', 'platform_admin_level_0', 'rh_level_2', 'rh_level_1'].includes(currentUser.role)) {
+      throw new ForbiddenException('Somente a Diretoria e o RH podem acessar a fila de triagem.');
+    }
+    return this.usersService.findPendingHrReview(tenantId);
+  }
+
+  // Triagem do RH / Diretoria: Aprova documentação e envia para o Gerente
+  @Patch(':id/hr-approve')
+  @UseGuards(JwtAuthGuard)
+  async approveBrokerByHr(
+    @Param('id') brokerId: string,
+    @CurrentUser() currentUser: { sub: string; role: string },
+    @TenantId() tenantId: string,
+  ) {
+    return this.usersService.approveBrokerByHr(brokerId, currentUser, tenantId);
+  }
+
+  // Triagem do RH / Diretoria: Ajusta dados/estágio do cadastro antes de aprovar
+  @Patch(':id/hr-update')
+  @UseGuards(JwtAuthGuard)
+  async updateBrokerByHr(
+    @Param('id') brokerId: string,
+    @Body() dto: { name?: string; nomeGuerra?: string; creci?: string; brokerStage?: 'treinamento' | 'estagiario' | 'corretor_creci'; managerId?: string },
+    @CurrentUser() currentUser: { sub: string; role: string },
+    @TenantId() tenantId: string,
+  ) {
+    return this.usersService.updateBrokerByHr(brokerId, dto, currentUser, tenantId);
+  }
+
+  // Triagem do RH / Diretoria: Exclusão definitiva para liberar Nome de Guerra e E-mail imediatamente
+  @Delete(':id/hard-delete')
+  @UseGuards(JwtAuthGuard)
+  async hardDeleteBroker(
+    @Param('id') brokerId: string,
+    @CurrentUser() currentUser: { sub: string; role: string },
+    @TenantId() tenantId: string,
+  ) {
+    return this.usersService.hardDeleteBroker(brokerId, currentUser, tenantId);
+  }
+
   // 3. Gerente lista os corretores pendentes do seu time (ROTA PROTEGIDA) [10]
   @Get('pending/:managerId')
   @UseGuards(JwtAuthGuard)

@@ -88,6 +88,9 @@ export class User {
   @Column({ type: 'boolean', default: false })
   must_change_password: boolean;
 
+  @Column({ type: 'boolean', default: false })
+  approved_by_hr: boolean;
+
   @Column({ type: 'timestamp', nullable: true })
   password_reset_expires_at: Date | null;
 

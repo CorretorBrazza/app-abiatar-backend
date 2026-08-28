@@ -15,6 +15,7 @@ import { CreateReceptionistDto } from './dto/create-receptionist.dto';
 import { ApproveBrokerDto } from './dto/approve-broker.dto';
 import { TransferBrokerDto, UpdateBrokerLeadPauseDto, UpdateBrokerProfileDto, UpdateBrokerStageDto } from './dto/update-broker-profile.dto';
 import { NotificationsService } from '../notifications/notifications.service';
+import { EmailService } from '../notifications/email.service';
 import { AuditService } from '../audit/audit.service';
 import { RealtimeService } from '../realtime/realtime.service';
 
@@ -30,6 +31,7 @@ export class UsersService implements OnModuleInit {
     @InjectRepository(Tenant)
     private tenantRepository: Repository<Tenant>,
     private notificationsService: NotificationsService,
+    private emailService: EmailService,
     private auditService: AuditService,
     private readonly realtimeService: RealtimeService,
   ) {}
@@ -44,7 +46,11 @@ export class UsersService implements OnModuleInit {
         ALTER TABLE users 
         ALTER COLUMN creci DROP NOT NULL;
       `);
-      console.log('[USERS] Schema auto-healing garantido com sucesso (broker_stage & creci nullable).');
+      await this.userRepository.query(`
+        ALTER TABLE users 
+        ADD COLUMN IF NOT EXISTS approved_by_hr boolean NOT NULL DEFAULT true;
+      `);
+      console.log('[USERS] Schema auto-healing garantido com sucesso (broker_stage, creci nullable & approved_by_hr).');
     } catch (err) {
       console.error('[USERS] Aviso ao executar auto-healing de schema:', err);
     }
@@ -418,7 +424,13 @@ export class UsersService implements OnModuleInit {
     const salt = await bcrypt.genSalt(10);
     const passwordHashed = await bcrypt.hash(dto.passwordHash, salt);
 
-    // Cria o registro do Corretor (Status: Inativo, aguardando aprovação do Gerente)
+    const chosenManager = await this.userRepository.findOne({
+      where: { id: managerId, tenant_id: tenantId },
+      select: { id: true, name: true, nome_guerra: true },
+    });
+    const currentTenant = await this.tenantRepository.findOne({ where: { id: tenantId } });
+
+    // Cria o registro do Corretor (Status: Inativo, aguardando triagem do RH)
     const broker: User = this.userRepository.create({
       tenant_id: tenantId,
       manager_id: managerId,
@@ -429,7 +441,8 @@ export class UsersService implements OnModuleInit {
       creci: dto.creci ? dto.creci.trim().toUpperCase() : null,
       broker_stage: stage,
       role: 'corretor_level_3',
-      status: 'inactive', // Fica inativo até que o gerente aprove
+      status: 'inactive', // Fica inativo até que seja aprovado
+      approved_by_hr: false, // Fica false aguardando triagem documental do RH
     });
 
     const saved: User = await this.userRepository.save(broker);
@@ -438,29 +451,35 @@ export class UsersService implements OnModuleInit {
       await this.linkRepository.save(link);
     }
 
-    // Notifica o gerente em tempo real e push
+    // Dispara e-mail com resumo e documentos para o RH via Resend (não bloqueante)
+    void this.emailService.sendBrokerRegistrationToHr({
+      brokerName: saved.name,
+      brokerNomeGuerra: saved.nome_guerra,
+      brokerEmail: saved.email,
+      brokerStage: saved.broker_stage || 'treinamento',
+      creci: saved.creci,
+      managerName: chosenManager?.name || 'Gerência',
+      managerNomeGuerra: chosenManager?.nome_guerra || chosenManager?.name || 'Gerência',
+      tenantName: currentTenant?.name || 'ABIATAR',
+      documents: dto.documents,
+    });
+
+    // Notifica Diretoria e RH em tempo real (SSE)
     this.realtimeService.publish({
-      eventType: 'broker.registered',
+      eventType: 'broker.registered_pending_hr',
       tenantId,
       aggregateId: saved.id,
       payload: {
         brokerId: saved.id,
         brokerName: saved.nome_guerra,
         managerId,
+        managerNomeGuerra: chosenManager?.nome_guerra || chosenManager?.name,
         stage: saved.broker_stage,
       },
     });
 
-    void this.notificationsService.sendToUser(
-      managerId,
-      tenantId,
-      'Novo corretor cadastrado',
-      `O corretor ${saved.nome_guerra} solicitou cadastro na sua equipe. Acesse o painel para aprovar.`,
-      { type: 'broker_registered', brokerId: saved.id },
-    );
-
     return {
-      message: 'Seu cadastro foi enviado! Aguarde a aprovação do seu gerente para acessar o sistema.',
+      message: 'Seu cadastro e documentos foram enviados com sucesso! Aguarde a validação do RH para liberação junto ao seu Gerente.',
     };
   }
 
@@ -558,14 +577,163 @@ export class UsersService implements OnModuleInit {
     };
   }
 
-  // 3. Gerente lista os corretores pendentes de aprovação da sua equipe
+  // 3. Gerente lista os corretores pendentes de aprovação da sua equipe (somente após aprovação do RH)
   async findPendingApprovals(managerId: string | null, tenantId: string): Promise<User[]> {
     return this.userRepository.find({
       where: managerId
-        ? { manager_id: managerId, tenant_id: tenantId, status: 'inactive', removed_at: IsNull() }
-        : { tenant_id: tenantId, role: 'corretor_level_3', status: 'inactive', removed_at: IsNull() },
+        ? { manager_id: managerId, tenant_id: tenantId, status: 'inactive', approved_by_hr: true, removed_at: IsNull() }
+        : { tenant_id: tenantId, role: 'corretor_level_3', status: 'inactive', approved_by_hr: true, removed_at: IsNull() },
       order: { name: 'ASC' },
     });
+  }
+
+  // Lista corretores aguardando triagem documental pelo RH / Diretoria
+  async findPendingHrReview(tenantId: string): Promise<any[]> {
+    const brokers = await this.userRepository.find({
+      where: {
+        tenant_id: tenantId,
+        role: 'corretor_level_3',
+        status: 'inactive',
+        approved_by_hr: false,
+        removed_at: IsNull(),
+      },
+      order: { created_at: 'DESC' },
+    });
+
+    const managers = await this.userRepository.find({
+      where: { tenant_id: tenantId, role: 'gerencia_level_2', status: 'active', removed_at: IsNull() },
+      select: { id: true, name: true, nome_guerra: true },
+    });
+    const managerMap = new Map(managers.map((m) => [m.id, m]));
+
+    return brokers.map((b) => ({
+      id: b.id,
+      name: b.name,
+      nome_guerra: b.nome_guerra,
+      email: b.email,
+      creci: b.creci,
+      broker_stage: b.broker_stage || 'treinamento',
+      manager_id: b.manager_id,
+      manager_nome_guerra: b.manager_id ? (managerMap.get(b.manager_id)?.nome_guerra || managerMap.get(b.manager_id)?.name || null) : null,
+      created_at: b.created_at,
+    }));
+  }
+
+  // RH / Diretoria aprova a triagem documental e encaminha para o Gerente
+  async approveBrokerByHr(brokerId: string, actor: { sub: string; role: string }, tenantId: string) {
+    if (!['diretoria_level_1', 'platform_admin_level_0', 'rh_level_2', 'rh_level_1'].includes(actor.role)) {
+      throw new ForbiddenException('Somente a Diretoria e o RH podem aprovar a triagem documental.');
+    }
+
+    const broker = await this.userRepository.findOne({
+      where: { id: brokerId, tenant_id: tenantId, role: 'corretor_level_3', status: 'inactive', removed_at: IsNull() },
+    });
+    if (!broker) throw new NotFoundException('Corretor não encontrado na fila de triagem.');
+
+    broker.approved_by_hr = true;
+    const saved = await this.userRepository.save(broker);
+
+    // Notifica o gerente responsável
+    if (saved.manager_id) {
+      this.realtimeService.publish({
+        eventType: 'broker.registered',
+        tenantId,
+        aggregateId: saved.id,
+        payload: {
+          brokerId: saved.id,
+          brokerName: saved.nome_guerra,
+          managerId: saved.manager_id,
+          stage: saved.broker_stage,
+        },
+      });
+
+      void this.notificationsService.sendToUser(
+        saved.manager_id,
+        tenantId,
+        'Novo corretor liberado pelo RH',
+        `O corretor ${saved.nome_guerra} foi validado pelo RH e está pronto para aprovação de carência na sua equipe.`,
+        { type: 'broker_registered', brokerId: saved.id },
+      );
+    }
+
+    void this.auditService.record({ tenantId, actorUserId: actor.sub, actorRole: actor.role }, {
+      action: 'BROKER_HR_APPROVED', entityType: 'USER', entityId: saved.id,
+      afterData: { brokerId: saved.id, nome_guerra: saved.nome_guerra, manager_id: saved.manager_id, approved_by_hr: true },
+      reason: 'Triagem documental aprovada pelo RH',
+    });
+
+    return {
+      message: `Documentação do corretor ${saved.nome_guerra} aprovada! O cadastro foi encaminhado para o Gerente responsável.`,
+      broker: { id: saved.id, nome_guerra: saved.nome_guerra, stage: saved.broker_stage },
+    };
+  }
+
+  // RH / Diretoria ajusta dados do corretor antes de aprovar
+  async updateBrokerByHr(
+    brokerId: string,
+    dto: { name?: string; nomeGuerra?: string; creci?: string; brokerStage?: 'treinamento' | 'estagiario' | 'corretor_creci'; managerId?: string },
+    actor: { sub: string; role: string },
+    tenantId: string,
+  ) {
+    if (!['diretoria_level_1', 'platform_admin_level_0', 'rh_level_2', 'rh_level_1'].includes(actor.role)) {
+      throw new ForbiddenException('Somente a Diretoria e o RH podem ajustar dados na triagem.');
+    }
+
+    const broker = await this.userRepository.findOne({
+      where: { id: brokerId, tenant_id: tenantId, role: 'corretor_level_3', status: 'inactive', removed_at: IsNull() },
+    });
+    if (!broker) throw new NotFoundException('Corretor não encontrado na fila de triagem.');
+
+    if (dto.nomeGuerra) {
+      const normalized = this.normalizeNomeGuerra(dto.nomeGuerra);
+      const existing = await this.userRepository.findOne({
+        where: { nome_guerra: Raw((alias) => `LOWER(${alias}) = LOWER(:nomeGuerra)`, { nomeGuerra: normalized }), tenant_id: tenantId, id: Not(broker.id) },
+      });
+      if (existing) throw new BadRequestException(`O nome de guerra '${normalized}' já está em uso nesta empresa.`);
+      broker.nome_guerra = normalized;
+    }
+
+    if (dto.name !== undefined) broker.name = dto.name.trim();
+    if (dto.creci !== undefined) broker.creci = dto.creci ? dto.creci.trim().toUpperCase() : null;
+    if (dto.brokerStage !== undefined) broker.broker_stage = dto.brokerStage;
+    if (dto.managerId !== undefined) {
+      const manager = await this.userRepository.findOne({ where: { id: dto.managerId, tenant_id: tenantId, role: 'gerencia_level_2', status: 'active' } });
+      if (!manager) throw new BadRequestException('O gerente selecionado não é válido ou não está ativo.');
+      broker.manager_id = manager.id;
+    }
+
+    const saved = await this.userRepository.save(broker);
+    return {
+      message: 'Dados do corretor atualizados com sucesso pelo RH.',
+      broker: { id: saved.id, name: saved.name, nome_guerra: saved.nome_guerra, creci: saved.creci, broker_stage: saved.broker_stage, manager_id: saved.manager_id },
+    };
+  }
+
+  // RH / Diretoria exclui definitivamente (Hard Delete) para liberar Nome de Guerra e E-mail imediatamente
+  async hardDeleteBroker(brokerId: string, actor: { sub: string; role: string }, tenantId: string) {
+    if (!['diretoria_level_1', 'platform_admin_level_0', 'rh_level_2', 'rh_level_1'].includes(actor.role)) {
+      throw new ForbiddenException('Somente a Diretoria e o RH podem excluir cadastros.');
+    }
+
+    const broker = await this.userRepository.findOne({
+      where: { id: brokerId, tenant_id: tenantId, role: 'corretor_level_3' },
+    });
+    if (!broker) throw new NotFoundException('Corretor não encontrado.');
+
+    const beforeInfo = { id: broker.id, name: broker.name, nome_guerra: broker.nome_guerra, email: broker.email };
+
+    // Hard delete no banco de dados para liberar imediatamente o Nome de Guerra e E-mail
+    await this.userRepository.delete({ id: broker.id, tenant_id: tenantId });
+
+    void this.auditService.record({ tenantId, actorUserId: actor.sub, actorRole: actor.role }, {
+      action: 'BROKER_HARD_DELETED', entityType: 'USER', entityId: broker.id,
+      beforeData: beforeInfo,
+      reason: 'Cadastro excluído definitivamente na triagem para liberação de Nome de Guerra',
+    });
+
+    return {
+      message: `Cadastro de ${beforeInfo.nome_guerra} excluído com sucesso. O Nome de Guerra e E-mail foram liberados.`,
+    };
   }
 
   // 4. Gerente aprova o corretor e define a faixa de carência (7, 15 ou 30 dias)

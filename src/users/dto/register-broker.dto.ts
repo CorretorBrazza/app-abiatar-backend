@@ -38,5 +38,12 @@ export class RegisterBrokerDto {
   @IsString()
   @Length(1, 30)
   creci?: string;
+
+  @IsOptional()
+  documents?: Array<{
+    filename: string;
+    contentType?: string;
+    base64: string;
+  }>;
 }
 

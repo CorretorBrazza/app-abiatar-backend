@@ -7,6 +7,7 @@ import { Presence } from '../presences/entities/presence.entity';
 import { BoothReceptionist } from '../booths/entities/booth-receptionist.entity';
 import { AuditModule } from '../audit/audit.module';
 import { NotificationsService } from './notifications.service';
+import { EmailService } from './email.service';
 import { PushDeviceToken } from './entities/push-device-token.entity';
 import { NotificationsController } from './notifications.controller';
 import { AuthModule } from '../auth/auth.module';
@@ -19,7 +20,7 @@ import { AuthModule } from '../auth/auth.module';
     AuditModule,
   ],
   controllers: [NotificationsController],
-  providers: [NotificationsService],
-  exports: [NotificationsService], // Exporta o serviço para uso global
+  providers: [NotificationsService, EmailService],
+  exports: [NotificationsService, EmailService], // Exporta o serviço para uso global
 })
 export class NotificationsModule {}

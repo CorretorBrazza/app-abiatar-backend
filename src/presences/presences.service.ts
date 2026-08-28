@@ -24,6 +24,9 @@ export class PresencesService {
     @InjectRepository(Presence)
     private presenceRepository: Repository<Presence>,
 
+    @InjectRepository(User)
+    private userRepository: Repository<User>,
+
     @InjectRepository(Booth)
     private boothRepository: Repository<Booth>,
 
@@ -143,6 +146,20 @@ export class PresencesService {
 
     if (activePresence) {
       throw new BadRequestException('Você já possui um check-in ativo. Finalize o turno atual antes de iniciar outro.');
+    }
+
+    // A1. Validação de Estágio e Conformidade do Corretor
+    const brokerUser = await this.userRepository.findOne({
+      where: { id: brokerId, tenant_id: tenantId },
+    });
+    if (!brokerUser || brokerUser.removed_at) {
+      throw new NotFoundException('Corretor não localizado no sistema.');
+    }
+    if (brokerUser.stage_expires_at && new Date(brokerUser.stage_expires_at) <= new Date()) {
+      throw new BadRequestException(`Check-in bloqueado. Seu estágio de '${brokerUser.broker_stage || 'treinamento'}' expirou. Solicite a renovação ou promoção junto à Diretoria.`);
+    }
+    if (brokerUser.status === 'inactive') {
+      throw new BadRequestException('Check-in bloqueado. Seu cadastro está inativo ou suspenso. Contate a Diretoria.');
     }
 
     // B. Busca o plantão de vendas solicitado e suas regras vigentes
@@ -324,6 +341,7 @@ export class PresencesService {
     });
 
     const savedPresence = await this.presenceRepository.save(presence);
+    void this.userRepository.update({ id: brokerId }, { last_checkin_at: now });
     this.realtimeService.publish({ eventType: 'presence.checked_in', tenantId, aggregateId: savedPresence.id, payload: { brokerId, boothId: dto.boothId, status: savedPresence.status, nextConfirmationAt: savedPresence.next_confirmation_at, roletaPosition: savedPresence.roleta_position, roletaEntryType: savedPresence.roleta_entry_type, drawTimeFormatted: assignedDrawTimeStr } });
 
     // Tenta processar sorteios pendentes caso o check-in ocorra no marco do sorteio

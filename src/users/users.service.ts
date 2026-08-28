@@ -1,5 +1,5 @@
 // src/users/users.service.ts
-import { Injectable, OnModuleInit, BadRequestException, NotFoundException } from '@nestjs/common';
+import { Injectable, OnModuleInit, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, MoreThan, LessThanOrEqual, Raw, IsNull, In, Not, Brackets } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
@@ -555,8 +555,34 @@ export class UsersService implements OnModuleInit {
       broker.broker_stage = dto.brokerStage;
     }
 
+    // Calcula a vigência do estágio: Treinamento = 90 dias, Estagiário = 180 dias, CRECI = sem validade fixa
+    const now = new Date();
+    if (broker.broker_stage === 'treinamento') {
+      const exp = new Date(now);
+      exp.setDate(exp.getDate() + 90);
+      broker.stage_expires_at = exp;
+    } else if (broker.broker_stage === 'estagiario') {
+      const exp = new Date(now);
+      exp.setDate(exp.getDate() + 180);
+      broker.stage_expires_at = exp;
+    } else {
+      broker.stage_expires_at = null;
+    }
+
     await this.userRepository.save(broker);
-    this.realtimeService.publish({ eventType: 'broker.approved', tenantId, aggregateId: broker.id, payload: { brokerId: broker.id, managerId: broker.manager_id, status: broker.status, brokerStage: broker.broker_stage, carenciaEndsAt: broker.carencia_ends_at } });
+    this.realtimeService.publish({
+      eventType: 'broker.approved',
+      tenantId,
+      aggregateId: broker.id,
+      payload: {
+        brokerId: broker.id,
+        managerId: broker.manager_id,
+        status: broker.status,
+        brokerStage: broker.broker_stage,
+        stageExpiresAt: broker.stage_expires_at,
+        carenciaEndsAt: broker.carencia_ends_at,
+      },
+    });
     const approvalMessage = dto.carenciaDays === 0
       ? 'Seu cadastro foi aprovado sem carência. Você poderá atuar conforme as regras de presença e elegibilidade.'
       : `Seu cadastro foi aprovado. Sua carência termina em ${carenciaExpiration.toLocaleDateString('pt-BR')}.`;
@@ -574,6 +600,51 @@ export class UsersService implements OnModuleInit {
         : `Corretor '${broker.nome_guerra}' aprovado com sucesso! Carência definida por ${dto.carenciaDays} dias.`,
       carencia_ends_at: broker.carencia_ends_at,
       broker_stage: broker.broker_stage,
+      stage_expires_at: broker.stage_expires_at,
+    };
+  }
+
+  private enrichBrokerCompliance(broker: any) {
+    const now = new Date();
+    let daysUntilExpiry: number | null = null;
+    let isStageExpired = false;
+    let daysSinceLastCheckin: number | null = null;
+    let isInactive90d = false;
+    let suspensionReason: string | null = null;
+
+    if (broker.stage_expires_at) {
+      const exp = new Date(broker.stage_expires_at);
+      const diffMs = exp.getTime() - now.getTime();
+      daysUntilExpiry = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+      if (daysUntilExpiry <= 0) {
+        isStageExpired = true;
+        suspensionReason = 'Estágio Vencido (Apenas Diretoria pode renovar/promover)';
+      }
+    }
+
+    const lastActivity = broker.last_checkin_at || broker.created_at;
+    if (lastActivity) {
+      const actDate = new Date(lastActivity);
+      const diffMs = now.getTime() - actDate.getTime();
+      daysSinceLastCheckin = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+      if (broker.broker_stage === 'corretor_creci' && daysSinceLastCheckin >= 90) {
+        isInactive90d = true;
+        suspensionReason = 'Inativo há mais de 90 dias sem check-in';
+      }
+    }
+
+    const isSuspended = isStageExpired || isInactive90d || (broker.status === 'inactive' && !broker.removed_at);
+
+    return {
+      ...broker,
+      stage_expires_at: broker.stage_expires_at || null,
+      days_until_stage_expiry: daysUntilExpiry,
+      is_stage_expired: isStageExpired,
+      last_checkin_at: broker.last_checkin_at || null,
+      days_since_last_checkin: daysSinceLastCheckin,
+      is_inactive_90d: isInactive90d,
+      suspension_reason: suspensionReason,
+      is_suspended: isSuspended,
     };
   }
 
@@ -598,6 +669,7 @@ export class UsersService implements OnModuleInit {
   async getBrokerManagementProfile(brokerId: string, actor: { sub: string; role: string }, tenantId: string) {
     const broker = await this.getBrokerForManagement(brokerId, actor, tenantId);
     const manager = broker.manager_id ? await this.userRepository.findOne({ where: { id: broker.manager_id, tenant_id: tenantId } }) : null;
+    const enriched = this.enrichBrokerCompliance(broker);
     return {
       id: broker.id,
       name: broker.name,
@@ -613,6 +685,14 @@ export class UsersService implements OnModuleInit {
       leads_pause_reason: broker.leads_pause_reason,
       removed_at: broker.removed_at,
       carencia_ends_at: broker.carencia_ends_at,
+      stage_expires_at: enriched.stage_expires_at,
+      days_until_stage_expiry: enriched.days_until_stage_expiry,
+      is_stage_expired: enriched.is_stage_expired,
+      last_checkin_at: enriched.last_checkin_at,
+      days_since_last_checkin: enriched.days_since_last_checkin,
+      is_inactive_90d: enriched.is_inactive_90d,
+      suspension_reason: enriched.suspension_reason,
+      is_suspended: enriched.is_suspended,
       created_at: broker.created_at,
       updated_at: broker.updated_at,
     };
@@ -656,22 +736,83 @@ export class UsersService implements OnModuleInit {
     actor: { sub: string; role: string },
     tenantId: string,
   ) {
+    if (!['diretoria_level_1', 'platform_admin_level_0'].includes(actor.role)) {
+      throw new ForbiddenException('Somente a Diretoria pode renovar ou promover estágios de Corretores.');
+    }
     const broker = await this.getBrokerForManagement(brokerId, actor, tenantId);
-    const before = { broker_stage: broker.broker_stage, creci: broker.creci };
+    const before = {
+      broker_stage: broker.broker_stage,
+      stage_expires_at: broker.stage_expires_at,
+      creci: broker.creci,
+      status: broker.status,
+    };
 
-    broker.broker_stage = dto.brokerStage;
+    const now = new Date();
+
+    if (dto.brokerStage) {
+      broker.broker_stage = dto.brokerStage;
+      if (dto.brokerStage === 'corretor_creci') {
+        broker.stage_expires_at = null;
+      } else if (dto.brokerStage === 'estagiario' && !dto.newExpiresAt && !dto.extendDays) {
+        const exp = new Date(now);
+        exp.setDate(exp.getDate() + 180);
+        broker.stage_expires_at = exp;
+      } else if (dto.brokerStage === 'treinamento' && !dto.newExpiresAt && !dto.extendDays) {
+        const exp = new Date(now);
+        exp.setDate(exp.getDate() + 90);
+        broker.stage_expires_at = exp;
+      }
+    }
+
     if (dto.creci !== undefined) {
       broker.creci = dto.creci ? dto.creci.trim().toUpperCase() : null;
     }
+
+    if (dto.extendDays && Number(dto.extendDays) > 0) {
+      const baseDate = (broker.stage_expires_at && new Date(broker.stage_expires_at) > now)
+        ? new Date(broker.stage_expires_at)
+        : new Date(now);
+      baseDate.setDate(baseDate.getDate() + Number(dto.extendDays));
+      broker.stage_expires_at = baseDate;
+    } else if (dto.newExpiresAt) {
+      broker.stage_expires_at = new Date(dto.newExpiresAt);
+    }
+
+    // Se o corretor estava inativo/suspenso por vencimento de estágio ou inatividade, reativa imediatamente
+    if (broker.status === 'inactive' && !broker.removed_at) {
+      broker.status = 'active';
+      broker.leads_paused = false;
+      broker.leads_pause_reason = null;
+    }
+
     const saved = await this.userRepository.save(broker);
+
+    this.realtimeService.publish({
+      eventType: 'broker.stage_upgraded',
+      tenantId,
+      aggregateId: saved.id,
+      payload: {
+        brokerId: saved.id,
+        managerId: saved.manager_id,
+        brokerStage: saved.broker_stage,
+        stageExpiresAt: saved.stage_expires_at,
+        creci: saved.creci,
+        status: saved.status,
+      },
+    });
 
     void this.auditService.record({ tenantId, actorUserId: actor.sub, actorRole: actor.role }, {
       action: 'BROKER_STAGE_UPDATED',
       entityType: 'USER',
       entityId: saved.id,
       beforeData: before,
-      afterData: { broker_stage: saved.broker_stage, creci: saved.creci },
-      reason: `Estágio de corretor atualizado para '${saved.broker_stage}'`,
+      afterData: {
+        broker_stage: saved.broker_stage,
+        stage_expires_at: saved.stage_expires_at,
+        creci: saved.creci,
+        status: saved.status,
+      },
+      reason: dto.reason || `Estágio/Vigência atualizado para '${saved.broker_stage}' pela Diretoria`,
     });
 
     return this.getBrokerManagementProfile(saved.id, actor, tenantId);
@@ -757,46 +898,109 @@ export class UsersService implements OnModuleInit {
     else qb.andWhere('user.status IN (:...statuses)', { statuses: ['active', 'grace_period'] });
     const search = query.search?.trim();
     if (search) qb.andWhere(new Brackets((sub) => sub.where('LOWER(user.name) LIKE LOWER(:search)', { search: `%${search}%` }).orWhere('LOWER(user.nome_guerra) LIKE LOWER(:search)', { search: `%${search}%` }).orWhere('LOWER(user.email) LIKE LOWER(:search)', { search: `%${search}%` })));
-    const [data, total] = await qb.orderBy('user.name', 'ASC').skip((page - 1) * pageSize).take(pageSize).getManyAndCount();
+    const [rawUsers, total] = await qb.orderBy('user.name', 'ASC').skip((page - 1) * pageSize).take(pageSize).getManyAndCount();
+    const data = rawUsers.map((user) => this.enrichBrokerCompliance(user));
     return { data, total, page, pageSize, totalPages: Math.ceil(total / pageSize) };
   }
 
-  // 6. Motor Agendador Cron: Roda automaticamente todas as noites à meia-noite [10, 18]
+  // 6. Motor Agendador Cron: Roda automaticamente todas as noites à meia-noite
   @Cron(CronExpression.EVERY_DAY_AT_MIDNIGHT)
-  async handleCarenciaExpirationCron() {
-    console.log('[CRON] Iniciando verificação de expiração de carências de corretores...');
+  async handleDailyBrokerComplianceCron() {
+    console.log('[CRON] Iniciando verificação diária de conformidade de corretores (carências e estágios)...');
     await this.processCarenciaExpirations();
+    await this.processStageExpirationsAndInactivity();
   }
 
-  // 7. Método Auxiliar para processar as carências vencidas (Usado pelo Cron e pela rota de testes) [10]
+  // 7. Método Auxiliar para processar as carências vencidas
   async processCarenciaExpirations() {
     const now = new Date();
-
-    // Busca todos os corretores com carência ativa (status: 'grace_period') e cuja data de expiração já venceu (menor ou igual a hoje) [10]
     const expiredBrokers = await this.userRepository.find({
       where: {
         status: 'grace_period',
-        carencia_ends_at: LessThanOrEqual(now), // carencia_ends_at <= agora
+        carencia_ends_at: LessThanOrEqual(now),
       },
     });
 
     let activatedCount = 0;
-
     for (const broker of expiredBrokers) {
-      // Altera o status para ativo [10]
       broker.status = 'active';
-      
       await this.userRepository.save(broker);
       activatedCount++;
-
       console.log(`[CRON] Carência encerrada para o corretor '${broker.nome_guerra}'. Usuário ativado!`);
-      // HOOK FUTURO: Disparar notificação Push ("Você está habilitado a receber leads!") [10]
-      // HOOK FUTURO: Habilitar o corretor no CVCRM via API [10]
     }
 
     return {
       processedBrokers: expiredBrokers.length,
       activatedCount,
+    };
+  }
+
+  // Processa automaticamente suspensões por vencimento de estágio ou 90 dias sem check-in
+  async processStageExpirationsAndInactivity() {
+    const now = new Date();
+    const ninetyDaysAgo = new Date();
+    ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+
+    const activeBrokers = await this.userRepository.find({
+      where: {
+        role: 'corretor_level_3',
+        status: In(['active', 'grace_period']),
+        removed_at: IsNull(),
+      },
+    });
+
+    let suspendedStageCount = 0;
+    let suspendedInactivityCount = 0;
+
+    for (const broker of activeBrokers) {
+      let shouldSuspend = false;
+      let reason = '';
+
+      // 1. Regra de Vencimento de Estágio (Treinamento / Estagiário)
+      if (broker.stage_expires_at && new Date(broker.stage_expires_at) <= now) {
+        shouldSuspend = true;
+        reason = `Estágio '${broker.broker_stage}' expirado em ${new Date(broker.stage_expires_at).toLocaleDateString('pt-BR')}.`;
+        suspendedStageCount++;
+      }
+      // 2. Regra de Inatividade de Corretor CRECI (> 90 dias sem check-in)
+      else if (broker.broker_stage === 'corretor_creci') {
+        const lastAct = broker.last_checkin_at || broker.created_at;
+        if (lastAct && new Date(lastAct) <= ninetyDaysAgo) {
+          shouldSuspend = true;
+          reason = 'Inativo há mais de 90 dias consecutivos sem check-in em plantão.';
+          suspendedInactivityCount++;
+        }
+      }
+
+      if (shouldSuspend) {
+        broker.status = 'inactive';
+        broker.leads_paused = true;
+        broker.leads_pause_reason = reason;
+        broker.session_version = (broker.session_version || 0) + 1;
+        await this.userRepository.save(broker);
+
+        this.realtimeService.publish({
+          eventType: 'broker.suspended',
+          tenantId: broker.tenant_id,
+          aggregateId: broker.id,
+          payload: { brokerId: broker.id, managerId: broker.manager_id, reason },
+        });
+
+        void this.auditService.record({ tenantId: broker.tenant_id }, {
+          action: 'BROKER_SUSPENDED_COMPLIANCE',
+          entityType: 'USER',
+          entityId: broker.id,
+          reason,
+        });
+
+        console.log(`[COMPLIANCE] Corretor '${broker.nome_guerra}' suspenso: ${reason}`);
+      }
+    }
+
+    return {
+      processedBrokers: activeBrokers.length,
+      suspendedStageCount,
+      suspendedInactivityCount,
     };
   }
   // Adicione este método dentro de UsersService, em src/users/users.service.ts

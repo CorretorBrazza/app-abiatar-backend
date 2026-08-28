@@ -11,12 +11,14 @@ import { BoothSpecialSchedule } from '../booths/entities/booth-special-schedule.
 import { DeadManLog } from './entities/dead-man-log.entity';
 import { Message } from '../messages/entities/message.entity'; // <-- ADICIONE ESTA IMPORTAÇÃO
 import { MessageRecipient } from '../messages/entities/message-recipient.entity'; // <-- ADICIONE ESTA IMPORTAÇÃO
+import { User } from '../users/user.entity';
 import { AuthModule } from '../auth/auth.module';
 
 @Module({
   imports: [
     TypeOrmModule.forFeature([
       Presence, 
+      User,
       Booth,
       BoothRuleSet,
       BoothHoliday,

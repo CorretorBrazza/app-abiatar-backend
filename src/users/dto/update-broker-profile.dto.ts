@@ -27,13 +27,25 @@ export class UpdateBrokerProfileDto {
 }
 
 export class UpdateBrokerStageDto {
+  @IsOptional()
   @IsIn(['treinamento', 'estagiario', 'corretor_creci'])
-  brokerStage: 'treinamento' | 'estagiario' | 'corretor_creci';
+  brokerStage?: 'treinamento' | 'estagiario' | 'corretor_creci';
 
   @IsOptional()
   @IsString()
   @Length(1, 30)
   creci?: string;
+
+  @IsOptional()
+  extendDays?: number;
+
+  @IsOptional()
+  @IsString()
+  newExpiresAt?: string;
+
+  @IsOptional()
+  @IsString()
+  reason?: string;
 }
 
 export class UpdateBrokerLeadPauseDto {

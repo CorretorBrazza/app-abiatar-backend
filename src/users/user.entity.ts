@@ -79,6 +79,12 @@ export class User {
   @Column({ type: 'timestamp', nullable: true })
   carencia_ends_at: Date | null;
 
+  @Column({ type: 'timestamp', nullable: true })
+  stage_expires_at: Date | null;
+
+  @Column({ type: 'timestamp', nullable: true })
+  last_checkin_at: Date | null;
+
   @Column({ type: 'boolean', default: false })
   must_change_password: boolean;
 

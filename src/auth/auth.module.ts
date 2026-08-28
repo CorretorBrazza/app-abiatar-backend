@@ -14,7 +14,9 @@ import { AuditModule } from '../audit/audit.module';
     AuditModule,
     JwtModule.register({
       secret: process.env.JWT_SECRET,
-      signOptions: { expiresIn: process.env.JWT_EXPIRES_IN || '120m' }, // O Token expira em 120 minutos (2 horas)
+      signOptions: {
+        expiresIn: (process.env.JWT_EXPIRES_IN as any) || '120m',
+      },
     }),
   ],
   controllers: [AuthController],

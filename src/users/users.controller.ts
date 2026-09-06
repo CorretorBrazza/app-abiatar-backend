@@ -397,6 +397,9 @@ export class UsersController {
     @TenantId() tenantId: string,
     @CurrentUser() currentUser: { sub: string; role: string },
   ) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new NotFoundException();
+    }
     return this.usersService.seedCleanHierarchy(tenantId, { id: currentUser.sub, role: currentUser.role });
   }
 
@@ -406,6 +409,9 @@ export class UsersController {
     @TenantId() tenantId: string,
     @CurrentUser() currentUser: { sub: string; role: string },
   ) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new NotFoundException();
+    }
     return this.usersService.cleanForFieldTest(tenantId, { id: currentUser.sub, role: currentUser.role });
   }
 }

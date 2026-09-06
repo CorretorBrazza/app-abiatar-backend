@@ -47,7 +47,9 @@ export class DevService {
    * Autenticação de desenvolvedor com Chave Mestra
    */
   async authenticateMasterKey(masterKey: string): Promise<{ success: boolean; token: string }> {
-    const validKey = process.env.DEV_DASHBOARD_KEY || 'abiatar-superadmin-master-2026';
+    const validKey =
+      process.env.DEV_DASHBOARD_KEY ||
+      (process.env.NODE_ENV === 'production' ? '' : 'abiatar-superadmin-master-2026');
     if (!masterKey || masterKey.trim() !== validKey.trim()) {
       throw new UnauthorizedException('Chave mestra de desenvolvedor inválida.');
     }

@@ -1,17 +1,12 @@
-import {
-  Injectable,
-  Logger,
-  NotFoundException,
-  BadRequestException,
-  UnauthorizedException,
-} from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, BadRequestException, UnauthorizedException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
+import { Repository, DataSource, Between, ILike } from 'typeorm';
 import * as bcrypt from 'bcryptjs';
 import { Tenant } from '../tenants/tenant.entity';
 import { User } from '../users/user.entity';
 import { Booth } from '../booths/entities/booth.entity';
 import { Presence } from '../presences/entities/presence.entity';
+import { DeadManLog } from '../presences/entities/dead-man-log.entity';
 import { AuditLog } from '../audit/entities/audit-log.entity';
 import { PushDeviceToken } from '../notifications/entities/push-device-token.entity';
 import { EmailService } from '../notifications/email.service';
@@ -37,6 +32,8 @@ export class DevService {
     private readonly auditRepo: Repository<AuditLog>,
     @InjectRepository(PushDeviceToken)
     private readonly pushTokenRepo: Repository<PushDeviceToken>,
+    @InjectRepository(DeadManLog)
+    private readonly deadManLogRepo: Repository<DeadManLog>,
     private readonly dataSource: DataSource,
     private readonly emailService: EmailService,
     private readonly notificationsService: NotificationsService,
@@ -397,5 +394,375 @@ export class DevService {
     } catch (err: any) {
       return { success: false, message: `Erro ao disparar push: ${err.message}`, tokensTargeted: 0 };
     }
+  }
+
+  /**
+   * Painel DEV: Estado do banco — migrations, índices, enums e contadores reais do Postgres
+   */
+  async getDatabaseStatus() {
+    const startTime = Date.now();
+    try {
+      const [migrations, indexes, enums, tables, columns, databaseSize] = await Promise.all([
+        this.dataSource.query(
+          `SELECT id, EXTRACT(EPOCH FROM timestamp)::bigint * 1000 AS applied_at_ms, "name" FROM migrations ORDER BY id`,
+        ),
+        this.dataSource.query(
+          `SELECT tablename, indexname, indexdef FROM pg_indexes WHERE schemaname = 'public' AND tablename IN ('presences','users','booths','tenants','dead_mans_switch_logs') ORDER BY tablename, indexname`,
+        ),
+        this.dataSource.query(
+          `SELECT t.typname, e.enumlabel FROM pg_type t JOIN pg_enum e ON e.enumtypid = t.oid WHERE t.typname IN ('presences_status_enum','dead_mans_switch_logs_response_status_enum','users_role_enum','users_status_enum') ORDER BY t.typname, e.enumsortorder`,
+        ),
+        this.dataSource.query(
+          `SELECT relname AS table_name, n_live_tup AS live_rows, n_dead_tup AS dead_rows FROM pg_stat_user_tables WHERE schemaname = 'public' ORDER BY relname`,
+        ),
+        this.dataSource.query(
+          `SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'public' AND column_name IN ('broker_stage','attended_at','attended_by_user_id','begin_at','end_at')`,
+        ),
+        this.dataSource.query(
+          `SELECT pg_size_pretty(pg_database_size(current_database())) AS size_pretty, ROUND(pg_database_size(current_database())::numeric / 1024 / 1024, 1) AS size_mb`,
+        ),
+      ]);
+
+      const indexByName = new Map<string, string>((indexes as Array<Record<string, any>>).map((i) => [i.indexname, i.indexdef]));
+      const enumByType = new Map<string, string[]>();
+      for (const e of enums as Array<{ typname: string; enumlabel: string }>) {
+        const list = enumByType.get(e.typname) || [];
+        list.push(e.enumlabel);
+        enumByType.set(e.typname, list);
+      }
+      const columnPairs = (columns as Array<{ table_name: string; column_name: string }>).map(
+        (c) => `${c.table_name}.${c.column_name}`,
+      );
+
+      const rowByName = new Map<string, number>((tables as Array<{ table_name: string; live_rows: number }>).map((t) => [t.table_name, t.live_rows]));
+
+      return {
+        checkedAt: new Date().toISOString(),
+        executionDurationMs: Date.now() - startTime,
+        databaseSize: databaseSize[0],
+        migrations: {
+          count: migrations.length,
+          last: migrations.length ? migrations[migrations.length - 1] : null,
+          applied: migrations,
+        },
+        tables: tables
+          .map((t: any) => ({ table_name: t.table_name, live_rows: t.live_rows, dead_rows: t.dead_rows }))
+          .filter((t: any) => !t.table_name.startsWith('pg_')),
+        enums: Object.fromEntries(enumByType.entries()),
+        indexes,
+        checks: {
+          uq_presences_broker_active: indexByName.has('uq_presences_broker_active'),
+          valid_reception_enum: (enumByType.get('dead_mans_switch_logs_response_status_enum') || []).includes('valid_reception'),
+          presences_status_complete: ['online', 'paused', 'absent', 'completed', 'invalidated'].every((s) =>
+            (enumByType.get('presences_status_enum') || []).includes(s),
+          ),
+          users_broker_stage_column: columnPairs.includes('users.broker_stage'),
+          presences_attended_columns: columnPairs.includes('presences.attended_at') && columnPairs.includes('presences.attended_by_user_id'),
+          rowCounts: {
+            tenants: rowByName.get('tenants') ?? 0,
+            users: rowByName.get('users') ?? 0,
+            booths: rowByName.get('booths') ?? 0,
+            presences: rowByName.get('presences') ?? 0,
+            dead_mans_switch_logs: rowByName.get('dead_mans_switch_logs') ?? 0,
+            audit_logs: rowByName.get('audit_logs') ?? 0,
+            messages: rowByName.get('messages') ?? 0,
+            push_device_tokens: rowByName.get('push_device_tokens') ?? 0,
+          },
+        },
+      };
+    } catch (err: any) {
+      this.logger.error(`[DevService] Falha ao consultar estado do banco: ${err.message}`);
+      throw new BadRequestException(`Não foi possível consultar o estado do banco: ${err.message}`);
+    }
+  }
+
+  /**
+   * Painel DEV: Diagnóstico ao vivo — presenças de hoje, corretor on-line, fila por plantão e logs do deadman
+   */
+  async getLiveOverview(tenantId?: string) {
+    const now = new Date();
+    const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+    const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+
+    const scoped = tenantId ? { tenant_id: tenantId } : {};
+
+    const [tenants, booths, onlinePresences, absentPresences, todayPresences, pendingPings, recentLogs] =
+      await Promise.all([
+        this.tenantRepo.find({ order: { name: 'ASC' } }),
+        this.boothRepo.find({ order: { name: 'ASC' } }),
+        this.presenceRepo.find({
+          where: { ...scoped, status: 'online' },
+          relations: { broker: true, booth: true },
+          order: { roleta_position: 'ASC', check_in_at: 'ASC' },
+        }),
+        this.presenceRepo.find({
+          where: { ...scoped, status: 'absent' },
+          relations: { broker: true, booth: true },
+          order: { check_in_at: 'ASC' },
+        }),
+        this.presenceRepo.find({
+          where: { ...scoped, check_in_at: Between(today0, todayEnd) },
+          relations: { booth: true },
+        }),
+        this.deadManLogRepo.find({
+          where: { response_status: 'pending' },
+          relations: { presence: { broker: true, booth: true } },
+          order: { sent_at: 'DESC' },
+          take: 25,
+        }),
+        this.deadManLogRepo.find({
+          relations: { presence: { broker: true, booth: true } },
+          order: { sent_at: 'DESC' },
+          take: 15,
+        }),
+      ]);
+
+    const tenantNameById = new Map<string, string>(tenants.map((t) => [t.id, t.name]));
+
+    const statusBreakdown = new Map<string, number>();
+    for (const p of todayPresences) {
+      statusBreakdown.set(p.status, (statusBreakdown.get(p.status) || 0) + 1);
+    }
+
+    const boothsSnapshot = booths
+      .filter((b) => !tenantId || b.tenant_id === tenantId)
+      .map((b) => {
+        const online = onlinePresences.filter((p) => p.booth_id === b.id);
+        const absent = absentPresences.filter((p) => p.booth_id === b.id);
+        const today = todayPresences.filter((p) => p.booth_id === b.id);
+        return {
+          boothId: b.id,
+          boothName: b.name,
+          tenantName: tenantNameById.get(b.tenant_id) || '—',
+          lifecycleStatus: b.lifecycle_status,
+          onlineCount: online.length,
+          awaitingRevalidation: absent.length,
+          todayCheckins: today.length,
+          onlineBrokers: online.map((p) => ({
+            presenceId: p.id,
+            brokerId: p.broker_id,
+            nomeGuerra: p.broker?.nome_guerra || 'Corretor',
+            roletaPosition: p.roleta_position,
+            roletaName: p.roleta_name,
+            checkInAt: p.check_in_at,
+          })),
+        };
+      });
+
+    return {
+      updatedAt: now.toISOString(),
+      overall: {
+        totalOnline: onlinePresences.length,
+        awaitingRevalidation: absentPresences.length,
+        pendingPings: pendingPings.length,
+        todayCheckins: todayPresences.length,
+      },
+      statusBreakdownToday: Object.fromEntries(statusBreakdown.entries()),
+      booths: boothsSnapshot,
+      deadmanRecent: recentLogs.map((l) => ({
+        id: l.id,
+        sentAt: l.sent_at,
+        respondedAt: l.responded_at,
+        responseStatus: l.response_status,
+        brokerId: l.presence?.broker_id || null,
+        nomeGuerra: l.presence?.broker?.nome_guerra || '—',
+        boothName: l.presence?.booth?.name || '—',
+        tenantName: l.presence?.tenant_id ? tenantNameById.get(l.presence.tenant_id) || '—' : '—',
+      })),
+    };
+  }
+
+  /**
+   * Painel DEV: Busca de usuários entre todos os tenants
+   */
+  async searchUsers(params: {
+    search?: string;
+    tenantId?: string;
+    role?: string;
+    status?: string;
+    page?: number;
+    limit?: number;
+  }) {
+    const page = Math.max(1, Number(params.page) || 1);
+    const limit = Math.min(100, Math.max(1, Number(params.limit) || 25));
+
+    const base: Record<string, unknown> = {};
+    if (params.tenantId) base.tenant_id = params.tenantId;
+    if (params.role) base.role = params.role;
+    if (params.status) base.status = params.status;
+
+    const search = params.search?.trim();
+    const where = search
+      ? [
+          { ...base, name: ILike(`%${search}%`) },
+          { ...base, nome_guerra: ILike(`%${search}%`) },
+          { ...base, email: ILike(`%${search}%`) },
+        ]
+      : base;
+
+    const [users, total] = await this.userRepo.findAndCount({
+      where,
+      relations: { tenant: true },
+      order: { created_at: 'DESC' },
+      take: limit,
+      skip: (page - 1) * limit,
+    });
+
+    const now = new Date();
+    const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+    const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+
+    const todayCountRows: Array<{ broker_id: string; cnt: number }> = users.length
+      ? await this.presenceRepo
+          .createQueryBuilder('p')
+          .select('p.broker_id', 'broker_id')
+          .addSelect('COUNT(*)::int', 'cnt')
+          .where('p.check_in_at >= :start AND p.check_in_at <= :end', { start: today0, end: todayEnd })
+          .andWhere('p.broker_id IN (:...ids)', { ids: users.map((u) => u.id) })
+          .groupBy('p.broker_id')
+          .getRawMany()
+      : [];
+    const todayCounts = new Map<string, number>(todayCountRows.map((r) => [r.broker_id, Number(r.cnt)]));
+
+    return {
+      total,
+      page,
+      limit,
+      users: users.map((u) => ({
+        id: u.id,
+        name: u.name,
+        nome_guerra: u.nome_guerra,
+        email: u.email,
+        role: u.role,
+        status: u.status,
+        broker_stage: u.broker_stage,
+        approved_by_hr: u.approved_by_hr,
+        must_change_password: u.must_change_password,
+        leads_paused: u.leads_paused,
+        last_checkin_at: u.last_checkin_at,
+        carencia_ends_at: u.carencia_ends_at,
+        stage_expires_at: u.stage_expires_at,
+        removed_at: u.removed_at,
+        created_at: u.created_at,
+        tenantName: u.tenant?.name || '—',
+        tenantSlug: u.tenant?.slug || '—',
+        presencesToday: todayCounts.get(u.id) || 0,
+      })),
+    };
+  }
+
+  /**
+   * Painel DEV: Alteração de status de um usuário (ativo, inativo ou período de graça)
+   */
+  async setUserStatus(id: string, status: string) {
+    const allowed = ['active', 'inactive', 'grace_period'];
+    if (!allowed.includes(status)) {
+      throw new BadRequestException(`Status inválido. Use um dos: ${allowed.join(', ')}`);
+    }
+
+    const user = await this.userRepo.findOne({ where: { id } });
+    if (!user) throw new NotFoundException('Usuário não localizado.');
+    if (user.role === 'platform_admin_level_0') {
+      throw new BadRequestException('Proteção do SuperAdmin: não é possível desativar o acesso de nível zero pelo painel dev.');
+    }
+
+    const before = user.status;
+    user.status = status;
+    await this.userRepo.save(user);
+
+    const log = this.auditRepo.create({
+      tenant_id: user.tenant_id,
+      actor_user_id: null,
+      actor_role: 'platform_admin_level_0',
+      actor_email_snapshot: 'platform_admin@abiatar.bitimob.com.br',
+      action: 'superadmin.user_status_changed',
+      session_id: 'dev-console',
+      entity_type: 'user',
+      entity_id: user.id,
+      before_data: { status: before },
+      after_data: { status },
+      success: true,
+      metadata: { targetEmail: user.email, targetNomeGuerra: user.nome_guerra },
+    });
+    await this.auditRepo.save(log).catch((err) => this.logger.error(`[DevService] Falha ao gravar audit log: ${err.message}`));
+
+    return {
+      success: true,
+      message: `Status de '${user.nome_guerra}' alterado para '${status}'.`,
+      user: { id: user.id, email: user.email, nome_guerra: user.nome_guerra, status: user.status },
+    };
+  }
+
+  /**
+   * Painel DEV: Perfil completo de um usuário com histórico de presenças
+   */
+  async getUserProfile(id: string) {
+    const user = await this.userRepo.findOne({ where: { id }, relations: { tenant: true } });
+    if (!user) throw new NotFoundException('Usuário não localizado.');
+
+    const now = new Date();
+    const today0 = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+    const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+
+    const [totalPresences, todayPresences, recentPresences, statusRows] = await Promise.all([
+      this.presenceRepo.count({ where: { broker_id: id } }),
+      this.presenceRepo.find({ where: { broker_id: id, check_in_at: Between(today0, todayEnd) } }),
+      this.presenceRepo.find({
+        where: { broker_id: id },
+        relations: { booth: true },
+        order: { check_in_at: 'DESC' },
+        take: 20,
+      }),
+      this.presenceRepo
+        .createQueryBuilder('p')
+        .select('p.status', 'status')
+        .addSelect('COUNT(*)::int', 'cnt')
+        .where('p.broker_id = :id', { id })
+        .groupBy('p.status')
+        .getRawMany(),
+    ]);
+
+    const byStatus: Record<string, number> = {};
+    for (const r of statusRows as Array<{ status: string; cnt: number }>) {
+      byStatus[r.status] = Number(r.cnt);
+    }
+
+    return {
+      id: user.id,
+      name: user.name,
+      nome_guerra: user.nome_guerra,
+      email: user.email,
+      role: user.role,
+      status: user.status,
+      broker_stage: user.broker_stage,
+      creci: user.creci || null,
+      approved_by_hr: user.approved_by_hr,
+      must_change_password: user.must_change_password,
+      leads_paused: user.leads_paused,
+      leads_pause_reason: user.leads_pause_reason || null,
+      last_checkin_at: user.last_checkin_at,
+      carencia_ends_at: user.carencia_ends_at,
+      stage_expires_at: user.stage_expires_at,
+      created_at: user.created_at,
+      updated_at: user.updated_at,
+      tenant: user.tenant ? { id: user.tenant.id, name: user.tenant.name, slug: user.tenant.slug } : null,
+      presences: {
+        total: totalPresences,
+        today: todayPresences.length,
+        byStatus,
+      },
+      recentPresences: recentPresences.map((p) => ({
+        id: p.id,
+        status: p.status,
+        checkInAt: p.check_in_at,
+        checkOutAt: p.check_out_at,
+        attendedAt: p.attended_at,
+        boothId: p.booth_id,
+        boothName: p.booth?.name || '—',
+        roletaName: p.roleta_name,
+        roletaPosition: p.roleta_position,
+        accumulatedMinutes: p.accumulated_minutes,
+      })),
+    };
   }
 }

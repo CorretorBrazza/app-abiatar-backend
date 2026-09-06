@@ -4,6 +4,7 @@ import { Tenant } from '../tenants/tenant.entity';
 import { User } from '../users/user.entity';
 import { Booth } from '../booths/entities/booth.entity';
 import { Presence } from '../presences/entities/presence.entity';
+import { DeadManLog } from '../presences/entities/dead-man-log.entity';
 import { AuditLog } from '../audit/entities/audit-log.entity';
 import { PushDeviceToken } from '../notifications/entities/push-device-token.entity';
 import { DevService } from './dev.service';
@@ -16,6 +17,7 @@ import { DevController } from './dev.controller';
       User,
       Booth,
       Presence,
+      DeadManLog,
       AuditLog,
       PushDeviceToken,
     ]),

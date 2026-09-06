@@ -108,6 +108,66 @@ export class DevController {
   }
 
   /**
+   * SuperAdmin: Estado do banco — migrations, índices, enums e contadores Postgres
+   */
+  @Get('db/status')
+  async getDatabaseStatus(@Headers('authorization') authHeader?: string) {
+    this.ensureDevAuthenticated(authHeader);
+    return this.devService.getDatabaseStatus();
+  }
+
+  /**
+   * SuperAdmin: Diagnóstico ao vivo — presenças de hoje, corretor on-line, filas por plantão e logs do deadman
+   */
+  @Get('live/overview')
+  async getLiveOverview(
+    @Query('tenantId') tenantId?: string,
+    @Headers('authorization') authHeader?: string,
+  ) {
+    this.ensureDevAuthenticated(authHeader);
+    return this.devService.getLiveOverview(tenantId || undefined);
+  }
+
+  /**
+   * SuperAdmin: Busca de usuários entre todos os tenants
+   */
+  @Get('users')
+  async searchUsers(
+    @Query('search') search?: string,
+    @Query('tenantId') tenantId?: string,
+    @Query('role') role?: string,
+    @Query('status') status?: string,
+    @Query('page') page?: number,
+    @Query('limit') limit?: number,
+    @Headers('authorization') authHeader?: string,
+  ) {
+    this.ensureDevAuthenticated(authHeader);
+    return this.devService.searchUsers({ search, tenantId, role, status, page, limit });
+  }
+
+  /**
+   * SuperAdmin: Alteração de status de um usuário
+   */
+  @Patch('users/:id/status')
+  async setUserStatus(
+    @Param('id') id: string,
+    @Body('status') status: string,
+    @Headers('authorization') authHeader?: string,
+  ) {
+    this.ensureDevAuthenticated(authHeader);
+    return this.devService.setUserStatus(id, status);
+  }
+
+  /**
+   * SuperAdmin: Perfil completo de um usuário com histórico de presenças
+   */
+  @Get('users/:id/profile')
+  async getUserProfile(@Param('id') id: string, @Headers('authorization') authHeader?: string) {
+    this.ensureDevAuthenticated(authHeader);
+    return this.devService.getUserProfile(id);
+  }
+
+  /**
    * Helper de proteção para requisições do Dev Controller
    */
   private ensureDevAuthenticated(authHeader?: string): void {

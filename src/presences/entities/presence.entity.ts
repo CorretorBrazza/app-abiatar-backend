@@ -6,12 +6,17 @@ import {
   CreateDateColumn, 
   UpdateDateColumn, 
   ManyToOne, 
-  JoinColumn 
+  JoinColumn,
+  Index
 } from 'typeorm';
 import { Tenant } from '../../tenants/tenant.entity';
 import { User } from '../../users/user.entity';
 import { Booth } from '../../booths/entities/booth.entity';
 
+@Index('uq_presences_broker_active', ['broker_id', 'tenant_id'], {
+  unique: true,
+  where: `status = 'online'`,
+})
 @Entity('presences')
 export class Presence {
   @PrimaryGeneratedColumn('uuid')

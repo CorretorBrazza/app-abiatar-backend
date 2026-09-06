@@ -404,7 +404,7 @@ export class DevService {
     try {
       const [migrations, indexes, enums, tables, columns, databaseSize] = await Promise.all([
         this.dataSource.query(
-          `SELECT id, EXTRACT(EPOCH FROM timestamp)::bigint * 1000 AS applied_at_ms, "name" FROM migrations ORDER BY id`,
+          `SELECT id, EXTRACT(EPOCH FROM "timestamp")::bigint * 1000 AS applied_at_ms, "name" FROM migrations ORDER BY id`,
         ),
         this.dataSource.query(
           `SELECT tablename, indexname, indexdef FROM pg_indexes WHERE schemaname = 'public' AND tablename IN ('presences','users','booths','tenants','dead_mans_switch_logs') ORDER BY tablename, indexname`,

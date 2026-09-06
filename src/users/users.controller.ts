@@ -185,15 +185,16 @@ export class UsersController {
     return this.usersService.findPendingHrReview(tenantId);
   }
 
-  // Triagem do RH / Diretoria: Aprova documentação e envia para o Gerente
+  // Triagem do RH / Diretoria: Aprova cadastro e ativa o corretor imediatamente
   @Patch(':id/hr-approve')
   @UseGuards(JwtAuthGuard)
   async approveBrokerByHr(
     @Param('id') brokerId: string,
+    @Body() body: { carenciaDays?: number },
     @CurrentUser() currentUser: { sub: string; role: string },
     @TenantId() tenantId: string,
   ) {
-    return this.usersService.approveBrokerByHr(brokerId, currentUser, tenantId);
+    return this.usersService.approveBrokerByHr(brokerId, currentUser, tenantId, body?.carenciaDays || 0);
   }
 
   // Triagem do RH / Diretoria: Ajusta dados/estágio do cadastro antes de aprovar
@@ -219,7 +220,7 @@ export class UsersController {
     return this.usersService.hardDeleteBroker(brokerId, currentUser, tenantId);
   }
 
-  // 3. Gerente lista os corretores pendentes do seu time (ROTA PROTEGIDA) [10]
+  // 3. Diretoria / RH lista os corretores pendentes de aprovação do tenant
   @Get('pending/:managerId')
   @UseGuards(JwtAuthGuard)
   async findPendingApprovals(
@@ -230,11 +231,11 @@ export class UsersController {
     if (['diretoria_level_1', 'platform_admin_level_0', 'rh_level_2', 'rh_level_1'].includes(currentUser.role)) {
       return this.usersService.findPendingApprovals(null, tenantId);
     }
-    const effectiveManagerId = this.resolveManagerId(managerId, currentUser);
-    return this.usersService.findPendingApprovals(effectiveManagerId, tenantId);
+    // Gerentes não aprovam mais cadastros
+    return [];
   }
 
-  // 4. Gerente aprova o corretor definindo a carência (ROTA PROTEGIDA) [10, 11]
+  // 4. Diretoria / RH aprova o corretor definindo a carência (ROTA PROTEGIDA)
   @Patch(':id/approve')
   @UseGuards(JwtAuthGuard)
   async approveBroker(
@@ -243,8 +244,8 @@ export class UsersController {
     @CurrentUser() currentUser: { sub: string; role: string },
     @TenantId() tenantId: string,
   ) {
-    if (currentUser.role !== 'gerencia_level_2') {
-      throw new ForbiddenException('Somente a Gerência responsável pode aprovar Corretores.');
+    if (!['diretoria_level_1', 'platform_admin_level_0', 'rh_level_2', 'rh_level_1'].includes(currentUser.role)) {
+      throw new ForbiddenException('Somente a Diretoria e o RH podem aprovar Corretores.');
     }
     return this.usersService.approveBroker(brokerId, approveBrokerDto, currentUser, tenantId);
   }
@@ -265,6 +266,16 @@ export class UsersController {
       throw new ForbiddenException('Somente a Diretoria e RH podem consultar os Corretores do tenant.');
     }
     return this.usersService.listActiveBrokersForDirector(tenantId, { page: Number(page), pageSize: Number(pageSize), search, status, managerId });
+  }
+
+  // Recepção lista os corretores do tenant para efetuar o check-in manual (Plano B)
+  @Get('reception-brokers')
+  @UseGuards(JwtAuthGuard)
+  async listBrokersForReception(
+    @CurrentUser('sub') receptionistId: string,
+    @TenantId() tenantId: string,
+  ) {
+    return this.usersService.listBrokersForReception(receptionistId, tenantId);
   }
 
   // 6. Gerente lista seu time ativo e em carência (ROTA PROTEGIDA) [10]

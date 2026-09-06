@@ -37,16 +37,16 @@ export class DeadManLog {
 
   @Column({
     type: 'enum',
-    enum: ['pending', 'valid_gps', 'valid_wifi', 'outside_area', 'no_response'],
+    enum: ['pending', 'valid_gps', 'valid_wifi', 'valid_reception', 'outside_area', 'no_response'],
     default: 'pending',
   })
   response_status: string;
 
   @Column({ type: 'decimal', precision: 10, scale: 8, nullable: true })
-  latitude: number;
+  latitude: number | null;
 
   @Column({ type: 'decimal', precision: 11, scale: 8, nullable: true })
-  longitude: number;
+  longitude: number | null;
 
   @CreateDateColumn()
   created_at: Date;

@@ -77,6 +77,12 @@ export class Presence {
   @Column({ type: 'timestamp', nullable: true })
   validation_starts_at: Date | null; // Horário a partir do qual contam os 120 min
 
+  @Column({ type: 'timestamp', nullable: true })
+  attended_at: Date | null; // Atendimento realizado pela Recepção (Plano B)
+
+  @Column({ type: 'uuid', nullable: true })
+  attended_by_user_id: string | null; // Registro de quem realizou o atendimento
+
   @Column({
     type: 'enum',
     enum: ['online', 'paused', 'absent', 'completed', 'invalidated'],

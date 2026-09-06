@@ -11,6 +11,7 @@ import { BoothSpecialSchedule } from '../booths/entities/booth-special-schedule.
 import { DeadManLog } from './entities/dead-man-log.entity';
 import { Message } from '../messages/entities/message.entity'; // <-- ADICIONE ESTA IMPORTAÇÃO
 import { MessageRecipient } from '../messages/entities/message-recipient.entity'; // <-- ADICIONE ESTA IMPORTAÇÃO
+import { BoothReceptionist } from '../booths/entities/booth-receptionist.entity';
 import { User } from '../users/user.entity';
 import { AuthModule } from '../auth/auth.module';
 
@@ -25,7 +26,8 @@ import { AuthModule } from '../auth/auth.module';
       BoothSpecialSchedule,
       DeadManLog, 
       Message, // <-- ADICIONADO PARA LIBERAR A INJEÇÃO DE DEPENDÊNCIA
-      MessageRecipient // <-- ADICIONADO PARA LIBERAR A INJEÇÃO DE DEPENDÊNCIA
+      MessageRecipient, // <-- ADICIONADO PARA LIBERAR A INJEÇÃO DE DEPENDÊNCIA
+      BoothReceptionist
     ]),
     AuthModule,
   ],

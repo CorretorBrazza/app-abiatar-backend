@@ -30,6 +30,7 @@ import { AddTenantWhiteLabelSettings1787000010000 } from './migrations/178700001
 import { AddPresenceConfirmationCycle1787000011000 } from './migrations/1787000011000-AddPresenceConfirmationCycle';
 import { AddBoothRulePeriods1787000012000 } from './migrations/1787000012000-AddBoothRulePeriods';
 import { AddBrokerStageColumn1787000013000 } from './migrations/1787000013000-AddBrokerStageColumn';
+import { AddPresenceAttendanceQueue1787000014000 } from './migrations/1787000014000-AddPresenceAttendanceQueue';
 
 export const AppDataSource = new DataSource({
   type: 'postgres',
@@ -66,6 +67,7 @@ export const AppDataSource = new DataSource({
     AddPresenceConfirmationCycle1787000011000, 
     AddBoothRulePeriods1787000012000,
     AddBrokerStageColumn1787000013000,
+    AddPresenceAttendanceQueue1787000014000,
   ],
   migrationsRun: false,
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,

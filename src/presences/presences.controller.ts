@@ -172,10 +172,43 @@ export class PresencesController {
   @Post('force-check-in')
   @UseGuards(JwtAuthGuard)
   async forceCheckIn(
-    @Body() dto: { brokerId?: string; boothId?: string; roletaPosition?: number },
+    @Body() dto: { brokerId?: string; boothId?: string },
     @CurrentUser() currentUser: { sub: string; role: string },
     @TenantId() tenantId: string,
   ) {
     return this.presencesService.forceCheckIn(currentUser, tenantId, dto);
+  }
+
+  // Revalidação de presença suspensa pela Recepção (hierarquia 0) — mantém a posição na roleta
+  @Post('force-validate')
+  @UseGuards(JwtAuthGuard)
+  async forceValidate(
+    @Body() dto: { presenceId?: string },
+    @CurrentUser() currentUser: { sub: string; role: string },
+    @TenantId() tenantId: string,
+  ) {
+    return this.presencesService.forceValidate(currentUser, tenantId, dto);
+  }
+
+  // Atendimento presencial (Plano B): a Recepção convoca o próximo da fila da roleta
+  @Post('attend/:presenceId')
+  @UseGuards(JwtAuthGuard)
+  async attendPresence(
+    @Param('presenceId') presenceId: string,
+    @CurrentUser() currentUser: { sub: string; role: string },
+    @TenantId() tenantId: string,
+  ) {
+    return this.presencesService.attendPresence(currentUser, tenantId, presenceId);
+  }
+
+  // Fila da roleta do momento para a Recepção acompanhar os plantões atribuídos
+  @Get('booths/:boothId/queue')
+  @UseGuards(JwtAuthGuard)
+  async getBoothQueue(
+    @Param('boothId') boothId: string,
+    @CurrentUser() currentUser: { sub: string; role: string },
+    @TenantId() tenantId: string,
+  ) {
+    return this.presencesService.getBoothQueue(currentUser, tenantId, boothId);
   }
 }

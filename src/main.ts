@@ -6,6 +6,7 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { json, urlencoded } from 'express';
 import { AppModule } from './app.module';
+import { runPendingMigrations } from './database/run-migrations';
 
 async function bootstrap() {
   if (process.env.NODE_ENV === 'production') {
@@ -18,6 +19,9 @@ async function bootstrap() {
       console.warn('[CONFIG] Aviso: FIREBASE_SERVICE_ACCOUNT não configurada. Push funcionará em modo fallback.');
     }
   }
+
+  // Aplica migrations pendentes antes do boot (idempotente; nada fica pendente no deploy)
+  await runPendingMigrations();
 
   const app = await NestFactory.create(AppModule);
   app.use(json({ limit: '50mb' }));

@@ -7,6 +7,7 @@ import * as crypto from 'crypto';
 import { Cron, CronExpression } from '@nestjs/schedule';
 
 import { User } from './user.entity';
+import { Presence } from '../presences/entities/presence.entity';
 import { Tenant } from '../tenants/tenant.entity';
 import { OnboardingLink } from './entities/onboarding-link.entity';
 import { RegisterBrokerDto } from './dto/register-broker.dto';
@@ -577,24 +578,21 @@ export class UsersService implements OnModuleInit {
     };
   }
 
-  // 3. Gerente lista os corretores pendentes de aprovação da sua equipe (somente após aprovação do RH)
+  // 3. Diretoria / RH lista os corretores pendentes de aprovação do tenant
   async findPendingApprovals(managerId: string | null, tenantId: string): Promise<User[]> {
     return this.userRepository.find({
-      where: managerId
-        ? { manager_id: managerId, tenant_id: tenantId, status: 'inactive', approved_by_hr: true, removed_at: IsNull() }
-        : { tenant_id: tenantId, role: 'corretor_level_3', status: 'inactive', approved_by_hr: true, removed_at: IsNull() },
+      where: { tenant_id: tenantId, role: 'corretor_level_3', status: 'inactive', removed_at: IsNull() },
       order: { name: 'ASC' },
     });
   }
 
-  // Lista corretores aguardando triagem documental pelo RH / Diretoria
+  // Lista corretores aguardando aprovação pela Diretoria / RH
   async findPendingHrReview(tenantId: string): Promise<any[]> {
     const brokers = await this.userRepository.find({
       where: {
         tenant_id: tenantId,
         role: 'corretor_level_3',
         status: 'inactive',
-        approved_by_hr: false,
         removed_at: IsNull(),
       },
       order: { created_at: 'DESC' },
@@ -615,28 +613,61 @@ export class UsersService implements OnModuleInit {
       broker_stage: b.broker_stage || 'treinamento',
       manager_id: b.manager_id,
       manager_nome_guerra: b.manager_id ? (managerMap.get(b.manager_id)?.nome_guerra || managerMap.get(b.manager_id)?.name || null) : null,
+      approved_by_hr: b.approved_by_hr,
       created_at: b.created_at,
     }));
   }
 
-  // RH / Diretoria aprova a triagem documental e encaminha para o Gerente
-  async approveBrokerByHr(brokerId: string, actor: { sub: string; role: string }, tenantId: string) {
+  // RH / Diretoria aprova o cadastro e ativa o corretor imediatamente (liberando check-in)
+  async approveBrokerByHr(
+    brokerId: string,
+    actor: { sub: string; role: string },
+    tenantId: string,
+    carenciaDays: number = 0,
+  ) {
     if (!['diretoria_level_1', 'platform_admin_level_0', 'rh_level_2', 'rh_level_1'].includes(actor.role)) {
-      throw new ForbiddenException('Somente a Diretoria e o RH podem aprovar a triagem documental.');
+      throw new ForbiddenException('Somente a Diretoria e o RH podem aprovar cadastros de corretores.');
     }
 
     const broker = await this.userRepository.findOne({
       where: { id: brokerId, tenant_id: tenantId, role: 'corretor_level_3', status: 'inactive', removed_at: IsNull() },
     });
-    if (!broker) throw new NotFoundException('Corretor não encontrado na fila de triagem.');
+    if (!broker) throw new NotFoundException('Corretor não encontrado na fila de triagem ou já aprovado.');
 
     broker.approved_by_hr = true;
+
+    // Define carência e status
+    const carenciaExpiration = new Date();
+    carenciaExpiration.setDate(carenciaExpiration.getDate() + carenciaDays);
+
+    if (carenciaDays === 0) {
+      broker.status = 'active';
+      broker.carencia_ends_at = null;
+    } else {
+      broker.status = 'grace_period';
+      broker.carencia_ends_at = carenciaExpiration;
+    }
+
+    // Calcula a vigência do estágio: Treinamento = 90 dias, Estagiário = 180 dias, CRECI = sem validade fixa
+    const now = new Date();
+    if (broker.broker_stage === 'treinamento') {
+      const exp = new Date(now);
+      exp.setDate(exp.getDate() + 90);
+      broker.stage_expires_at = exp;
+    } else if (broker.broker_stage === 'estagiario') {
+      const exp = new Date(now);
+      exp.setDate(exp.getDate() + 180);
+      broker.stage_expires_at = exp;
+    } else {
+      broker.stage_expires_at = null;
+    }
+
     const saved = await this.userRepository.save(broker);
 
-    // Notifica o gerente responsável
+    // Notifica o gerente responsável informando que um novo corretor foi aprovado para sua equipe
     if (saved.manager_id) {
       this.realtimeService.publish({
-        eventType: 'broker.registered',
+        eventType: 'broker.approved',
         tenantId,
         aggregateId: saved.id,
         payload: {
@@ -644,27 +675,40 @@ export class UsersService implements OnModuleInit {
           brokerName: saved.nome_guerra,
           managerId: saved.manager_id,
           stage: saved.broker_stage,
+          status: saved.status,
         },
       });
 
       void this.notificationsService.sendToUser(
         saved.manager_id,
         tenantId,
-        'Novo corretor liberado pelo RH',
-        `O corretor ${saved.nome_guerra} foi validado pelo RH e está pronto para aprovação de carência na sua equipe.`,
-        { type: 'broker_registered', brokerId: saved.id },
+        'Novo corretor integrado à equipe',
+        `O corretor ${saved.nome_guerra} foi aprovado pela Diretoria/RH e já está ativo na sua equipe.`,
+        { type: 'broker_approved', brokerId: saved.id },
       );
     }
 
+    // Notifica o próprio corretor
+    const approvalMessage = carenciaDays === 0
+      ? 'Seu cadastro foi aprovado pela Diretoria/RH sem carência. Você está liberado para realizar check-in e atuar nos plantões.'
+      : `Seu cadastro foi aprovado pela Diretoria/RH. Sua carência de leads termina em ${carenciaExpiration.toLocaleDateString('pt-BR')}.`;
+    void this.notificationsService.sendToUser(
+      saved.id,
+      tenantId,
+      'Cadastro aprovado',
+      approvalMessage,
+      { type: 'broker_approved', brokerId: saved.id, carenciaDays, brokerStage: saved.broker_stage, approvedBy: actor.sub, approvedByRole: actor.role },
+    );
+
     void this.auditService.record({ tenantId, actorUserId: actor.sub, actorRole: actor.role }, {
-      action: 'BROKER_HR_APPROVED', entityType: 'USER', entityId: saved.id,
-      afterData: { brokerId: saved.id, nome_guerra: saved.nome_guerra, manager_id: saved.manager_id, approved_by_hr: true },
-      reason: 'Triagem documental aprovada pelo RH',
+      action: 'BROKER_DIRECTOR_APPROVED', entityType: 'USER', entityId: saved.id,
+      afterData: { brokerId: saved.id, nome_guerra: saved.nome_guerra, manager_id: saved.manager_id, status: saved.status, approved_by_hr: true },
+      reason: 'Cadastro aprovado e ativado pela Diretoria/RH',
     });
 
     return {
-      message: `Documentação do corretor ${saved.nome_guerra} aprovada! O cadastro foi encaminhado para o Gerente responsável.`,
-      broker: { id: saved.id, nome_guerra: saved.nome_guerra, stage: saved.broker_stage },
+      message: `Corretor ${saved.nome_guerra} aprovado com sucesso pela Diretoria/RH e liberado para check-in!`,
+      broker: { id: saved.id, nome_guerra: saved.nome_guerra, stage: saved.broker_stage, status: saved.status },
     };
   }
 
@@ -736,28 +780,30 @@ export class UsersService implements OnModuleInit {
     };
   }
 
-  // 4. Gerente aprova o corretor e define a faixa de carência (7, 15 ou 30 dias)
+  // 4. Diretoria / RH aprova o corretor e define a faixa de carência (0, 7, 15 ou 30 dias)
   async approveBroker(
     brokerId: string,
     dto: ApproveBrokerDto,
     approver: { sub: string; role: string },
     tenantId: string,
   ) {
+    if (!['diretoria_level_1', 'platform_admin_level_0', 'rh_level_2', 'rh_level_1'].includes(approver.role)) {
+      throw new ForbiddenException('Somente a Diretoria e o RH podem aprovar Corretores.');
+    }
+
     const broker = await this.userRepository.findOne({
-      where: approver.role === 'gerencia_level_2'
-        ? { id: brokerId, manager_id: approver.sub, tenant_id: tenantId }
-        : { id: brokerId, tenant_id: tenantId, role: 'corretor_level_3' },
+      where: { id: brokerId, tenant_id: tenantId, role: 'corretor_level_3' },
     });
 
     if (!broker) {
-      throw new NotFoundException(approver.role === 'gerencia_level_2'
-        ? 'Corretor não encontrado ou não pertence à sua gerência.'
-        : 'Corretor não encontrado neste tenant.');
+      throw new NotFoundException('Corretor não encontrado neste tenant.');
     }
 
     if (broker.status !== 'inactive') {
       throw new BadRequestException('Este corretor já foi aprovado ou está ativo.');
     }
+
+    broker.approved_by_hr = true;
 
     // Calcula a data exata em que a carência de leads vai expirar
     const carenciaExpiration = new Date();
@@ -1121,6 +1167,51 @@ export class UsersService implements OnModuleInit {
     const [rawUsers, total] = await qb.orderBy('user.name', 'ASC').skip((page - 1) * pageSize).take(pageSize).getManyAndCount();
     const data = rawUsers.map((user) => this.enrichBrokerCompliance(user));
     return { data, total, page, pageSize, totalPages: Math.ceil(total / pageSize) };
+  }
+
+  // Lista de corretores para a Recepção efetuar o check-in manual (Plano B)
+  async listBrokersForReception(receptionistId: string, tenantId: string) {
+    const caller = await this.userRepository.findOne({ where: { id: receptionistId, tenant_id: tenantId } });
+    if (!caller || !['recepcao_level_3', 'diretoria_level_1', 'gerencia_level_2', 'platform_admin_level_0'].includes(caller.role)) {
+      throw new ForbiddenException('Acesso restrito à Recepção, Diretoria, Gerência ou Admin da plataforma.');
+    }
+
+    const brokers = await this.userRepository.find({
+      where: { tenant_id: tenantId, role: 'corretor_level_3', removed_at: IsNull(), status: In(['active', 'grace_period']) },
+      order: { nome_guerra: 'ASC' },
+      select: {
+        id: true,
+        nome_guerra: true,
+        name: true,
+        creci: true,
+        broker_stage: true,
+        status: true,
+        stage_expires_at: true,
+      },
+    });
+
+    const presenceRepo = this.userRepository.manager.getRepository(Presence);
+    const activePresences = await presenceRepo.find({
+      where: { tenant_id: tenantId, status: In(['online', 'absent']) },
+    });
+    const byBroker = new Map<string, Presence>();
+    for (const presence of activePresences) {
+      if (!byBroker.has(presence.broker_id)) byBroker.set(presence.broker_id, presence);
+    }
+
+    return brokers.map((broker) => {
+      const presence = byBroker.get(broker.id);
+      return {
+        id: broker.id,
+        nomeGuerra: broker.nome_guerra,
+        name: broker.name,
+        creci: broker.creci,
+        brokerStage: broker.broker_stage,
+        status: broker.status,
+        stageExpired: !!broker.stage_expires_at && new Date(broker.stage_expires_at) <= new Date(),
+        activePresence: presence ? { presenceId: presence.id, boothId: presence.booth_id, status: presence.status } : null,
+      };
+    });
   }
 
   // 6. Motor Agendador Cron: Roda automaticamente todas as noites à meia-noite

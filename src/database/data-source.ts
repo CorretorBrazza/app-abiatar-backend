@@ -70,5 +70,6 @@ export const AppDataSource = new DataSource({
     AddPresenceAttendanceQueue1787000014000,
   ],
   migrationsRun: false,
+  migrationsTransactionMode: 'each',
   ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
 });

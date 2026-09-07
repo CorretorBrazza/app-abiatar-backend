@@ -1205,8 +1205,12 @@ export class DevService {
     const started = Date.now();
     try {
       const results = await this.dataSource.query(`BEGIN READ ONLY; SET LOCAL statement_timeout = '5000'; ${finalSql}; COMMIT;`);
-      const last = Array.isArray(results) && results.length ? results[results.length - 1] : results;
-      const rows = Array.isArray(last) ? last : [];
+      const list = Array.isArray(results) ? results : [results];
+      let winner = list[0];
+      for (const r of list) {
+        if (Array.isArray(r) && Array.isArray(winner) && r.length >= winner.length) winner = r;
+      }
+      const rows = Array.isArray(winner) ? winner : [];
       const columns = rows.length && typeof rows[0] === 'object' && rows[0] !== null ? Object.keys(rows[0]) : [];
       return {
         success: true,

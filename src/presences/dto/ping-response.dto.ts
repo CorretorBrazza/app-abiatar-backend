@@ -1,5 +1,5 @@
 // src/presences/dto/ping-response.dto.ts
-import { IsLatitude, IsLongitude, IsOptional, IsString, IsUUID, Length } from 'class-validator';
+import { IsLatitude, IsLongitude, IsNumber, IsOptional, IsString, IsUUID, Length } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export class PingResponseDto {
@@ -18,4 +18,9 @@ export class PingResponseDto {
   @IsString()
   @Length(1, 100)
   ssid?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  capturedAt?: number;
 }

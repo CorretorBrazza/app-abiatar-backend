@@ -207,6 +207,16 @@ export class PresencesService {
         throw new BadRequestException('Coordenadas GPS não informadas e Wi-Fi do plantão não detectado.');
       }
 
+      // Validação de frescor da coordenada GPS (Prevenção de cache antigo / fraude)
+      if (dto.capturedAt) {
+        const nowMs = Date.now();
+        const ageMs = nowMs - Number(dto.capturedAt);
+        const MAX_LOCATION_AGE_MS = 2 * 60 * 1000; // 2 minutos
+        if (ageMs > MAX_LOCATION_AGE_MS || ageMs < -30_000) {
+          throw new BadRequestException('A coordenada GPS informada está desatualizada ou com horário inconsistente. Obtenha uma nova localização e tente novamente.');
+        }
+      }
+
       const boothLat = Number(booth.latitude);
       const boothLon = Number(booth.longitude);
       if (booth.latitude == null || booth.longitude == null || isNaN(boothLat) || isNaN(boothLon)) {
@@ -826,6 +836,20 @@ export class PresencesService {
     // B. Validação por GPS (Caso Wi-Fi não bata)
     let effectiveRadius = booth.gps_radius || 200;
     if (!isPresenceValid) {
+      if (dto.latitude === undefined || dto.longitude === undefined) {
+        throw new BadRequestException('Coordenadas GPS não informadas e Wi-Fi do plantão não detectado.');
+      }
+
+      // Validação de frescor da coordenada GPS (Prevenção de cache antigo / fraude no dead man's switch)
+      if (dto.capturedAt) {
+        const nowMs = Date.now();
+        const ageMs = nowMs - Number(dto.capturedAt);
+        const MAX_LOCATION_AGE_MS = 2 * 60 * 1000; // 2 minutos
+        if (ageMs > MAX_LOCATION_AGE_MS || ageMs < -30_000) {
+          throw new BadRequestException('A coordenada GPS de confirmação está desatualizada ou com horário inconsistente. Obtenha nova localização e tente novamente.');
+        }
+      }
+
       const boothLat = Number(booth.latitude);
       const boothLon = Number(booth.longitude);
 

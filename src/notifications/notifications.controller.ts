@@ -54,4 +54,13 @@ export class NotificationsController {
   ) {
     return this.notificationsService.revokeDeviceToken(deviceId, userId, tenantId);
   }
+
+  @Post('devices/deactivate')
+  async deactivateDevice(
+    @Body() body: { token?: string },
+    @CurrentUser('sub') userId: string,
+    @TenantId() tenantId: string,
+  ) {
+    return this.notificationsService.deactivateToken(body?.token || '', userId, tenantId);
+  }
 }

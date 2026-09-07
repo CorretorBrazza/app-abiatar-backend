@@ -106,6 +106,23 @@ export class NotificationsService implements OnModuleInit {
     return { revoked: true };
   }
 
+  async deactivateToken(token: string, userId: string, tenantId: string) {
+    if (!token) {
+      return { deactivated: false };
+    }
+    const deviceToken = await this.pushTokenRepository.findOne({
+      where: { token, user_id: userId, tenant_id: tenantId },
+    });
+
+    if (!deviceToken) {
+      return { deactivated: false };
+    }
+
+    deviceToken.is_active = false;
+    await this.pushTokenRepository.save(deviceToken);
+    return { deactivated: true };
+  }
+
   async sendOperationalPush(
     dto: SendOperationalPushDto,
     senderId: string,
@@ -328,6 +345,19 @@ export class NotificationsService implements OnModuleInit {
       });
       return true;
     } catch (error) {
+      const errorCode = (error as any)?.code || (error as any)?.errorInfo?.code;
+      if (
+        errorCode === 'messaging/registration-token-not-registered' ||
+        errorCode === 'messaging/invalid-registration-token' ||
+        errorCode === 'messaging/invalid-argument'
+      ) {
+        try {
+          await this.pushTokenRepository.update({ token: fcmToken }, { is_active: false });
+          console.warn(`[FIREBASE] Token FCM inativo/inválido desativado automaticamente: ${fcmToken.slice(0, 10)}...`);
+        } catch (dbErr) {
+          console.error('[FIREBASE] Falha ao desativar token órfão:', dbErr);
+        }
+      }
       console.error(
         '[FIREBASE - ERRO] Falha ao enviar notificação push:',
         error instanceof Error ? error.message : String(error),

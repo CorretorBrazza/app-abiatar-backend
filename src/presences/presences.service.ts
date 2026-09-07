@@ -207,16 +207,27 @@ export class PresencesService {
         throw new BadRequestException('Coordenadas GPS não informadas e Wi-Fi do plantão não detectado.');
       }
 
+      const boothLat = Number(booth.latitude);
+      const boothLon = Number(booth.longitude);
+      if (booth.latitude == null || booth.longitude == null || isNaN(boothLat) || isNaN(boothLon)) {
+        throw new BadRequestException('Plantão de vendas sem coordenadas geográficas (GPS) cadastradas. Contate o administrador.');
+      }
+
       distanceCalculated = this.calculateDistanceInMeters(
-        dto.latitude,
-        dto.longitude,
-        Number(booth.latitude),
-        Number(booth.longitude),
+        Number(dto.latitude),
+        Number(dto.longitude),
+        boothLat,
+        boothLon,
       );
 
-      if (distanceCalculated <= ruleSet.gps_radius_meters) {
+      const allowedRadius = ruleSet.gps_radius_meters || booth.gps_radius || 200;
+      if (distanceCalculated <= allowedRadius) {
         isLocationValid = true;
         methodUsed = `GPS (${Math.round(distanceCalculated)}m)`;
+      } else {
+        throw new BadRequestException(
+          `Check-in recusado: você está a aproximadamente ${Math.round(distanceCalculated)}m do plantão. O raio permitido é de ${allowedRadius}m. Aproxime-se do estande ou conecte-se ao Wi-Fi oficial do plantão.`,
+        );
       }
     }
 
@@ -558,28 +569,17 @@ export class PresencesService {
 
     // Busca a fila completa da roleta no plantão onde o corretor está ativo (apenas após o sorteio)
     let boothQueue: any[] = [];
-    if (activePresence && activePresence.roleta_position) {
-      const presencesInBooth = await this.presenceRepository.find({
-        where: {
-          booth_id: activePresence.booth_id,
-          tenant_id: tenantId,
-          status: 'online',
-          roleta_name: activePresence.roleta_name || undefined,
-        },
-        relations: { broker: true },
-        order: { roleta_position: 'ASC' },
-      });
-
-      boothQueue = presencesInBooth
-        .filter((p) => p.roleta_position !== null)
-        .map((p) => ({
-          brokerId: p.broker_id,
-          nomeGuerra: p.broker?.nome_guerra || 'Corretor',
-          roletaPosition: p.roleta_position,
-          roletaEntryType: p.roleta_entry_type,
-          minutesActive: Math.max(0, Math.floor((Date.now() - new Date(p.validation_starts_at || p.check_in_at).getTime()) / 1000 / 60)),
-          isCurrentBroker: p.broker_id === brokerId,
-        }));
+    let myEffectivePosition: number | null = null;
+    if (activePresence && activePresence.roleta_name && (activePresence.roleta_position || activePresence.roleta_entry_type === 'pos_barra')) {
+      const queue = await this.getEffectiveQueue(activePresence.booth_id, tenantId, activePresence.roleta_name);
+      boothQueue = queue.map((p) => ({
+        ...p,
+        roletaPosition: p.effectivePosition,
+        originalRoletaPosition: p.roletaPosition,
+        isCurrentBroker: p.brokerId === brokerId,
+      }));
+      const myItem = queue.find((p) => p.brokerId === brokerId);
+      myEffectivePosition = myItem ? myItem.effectivePosition : null;
     }
 
     // Busca todos os plantões publicados da construtora para detalhar as roletas por estande
@@ -636,7 +636,9 @@ export class PresencesService {
             minimumReached: activeMinutes >= minimumMinutes,
             roletaName: activePresence.roleta_name,
             roletaEntryType: activePresence.roleta_entry_type,
-            roletaPosition: activePresence.roleta_position,
+            roletaPosition: myEffectivePosition ?? activePresence.roleta_position,
+            effectivePosition: myEffectivePosition ?? activePresence.roleta_position,
+            originalRoletaPosition: activePresence.roleta_position,
             waitingDraw: activePresence.roleta_entry_type === 'pontual' && !activePresence.roleta_position,
             waitingBrokersCount,
             boothQueue,
@@ -822,18 +824,26 @@ export class PresencesService {
     }
 
     // B. Validação por GPS (Caso Wi-Fi não bata)
+    let effectiveRadius = booth.gps_radius || 200;
     if (!isPresenceValid) {
       const boothLat = Number(booth.latitude);
       const boothLon = Number(booth.longitude);
 
+      if (booth.latitude == null || booth.longitude == null || isNaN(boothLat) || isNaN(boothLon)) {
+        throw new BadRequestException('Plantão de vendas sem coordenadas geográficas (GPS) cadastradas. Contate a Recepção.');
+      }
+
+      const ruleSet = await this.getRuleSetForBooth(booth);
+      effectiveRadius = ruleSet?.gps_radius_meters || booth.gps_radius || 200;
+
       distanceCalculated = this.calculateDistanceInMeters(
-        dto.latitude,
-        dto.longitude,
+        Number(dto.latitude),
+        Number(dto.longitude),
         boothLat,
         boothLon,
       );
 
-      if (distanceCalculated <= booth.gps_radius) {
+      if (distanceCalculated <= effectiveRadius) {
         isPresenceValid = true;
         methodUsed = 'valid_gps';
       }
@@ -868,7 +878,7 @@ export class PresencesService {
       await this.presenceRepository.save(ping.presence);
 
       throw new BadRequestException(
-        `Presença suspensa. Não conseguimos confirmar que você está dentro do perímetro do plantão. Se você estiver no plantão, conecte-se à rede Wi-Fi oficial do plantão ou solicite a validação à recepção.`,
+        `Presença suspensa: você está a aproximadamente ${Math.round(distanceCalculated)}m do plantão, fora do raio de ${effectiveRadius}m permitido. Conecte-se ao Wi-Fi oficial ou solicite revalidação presencial à recepção.`,
       );
     }
   }
@@ -1511,6 +1521,42 @@ export class PresencesService {
     };
   }
 
+  // Fila unificada e recalculada: desconsidera corretores já atendidos e recalcula a posição efetiva
+  private async getEffectiveQueue(boothId: string, tenantId: string, roletaName: string) {
+    const queuePresences = await this.presenceRepository.find({
+      where: {
+        booth_id: boothId,
+        tenant_id: tenantId,
+        status: 'online',
+        roleta_name: roletaName,
+        attended_at: IsNull(),
+      },
+      relations: { broker: true },
+    });
+
+    const sortedQueue = queuePresences.sort((a, b) => {
+      const aPos = a.roleta_position ?? Number.MAX_SAFE_INTEGER;
+      const bPos = b.roleta_position ?? Number.MAX_SAFE_INTEGER;
+      if (aPos === bPos) {
+        return new Date(a.check_in_at).getTime() - new Date(b.check_in_at).getTime();
+      }
+      return aPos - bPos;
+    });
+    const positioned = sortedQueue.filter((p) => p.roleta_position !== null);
+    const notPositioned = sortedQueue.filter((p) => p.roleta_position === null);
+
+    return [...positioned, ...notPositioned].map((p, index) => ({
+      presenceId: p.id,
+      brokerId: p.broker_id,
+      nomeGuerra: p.broker?.nome_guerra || 'Corretor',
+      roletaPosition: p.roleta_position,
+      effectivePosition: index + 1,
+      roletaEntryType: p.roleta_entry_type,
+      minutesActive: Math.max(0, Math.floor((Date.now() - new Date(p.validation_starts_at || p.check_in_at).getTime()) / 1000 / 60)),
+      checkInAt: p.check_in_at,
+    }));
+  }
+
   // Fila do plantão para a Recepção: mostra somente a roleta do momento (roleta ativa)
   async getBoothQueue(actor: { sub: string; role: string }, tenantId: string, boothId: string) {
     const booth = await this.boothRepository.findOne({ where: { id: boothId, tenant_id: tenantId } });
@@ -1529,38 +1575,7 @@ export class PresencesService {
       };
     }
 
-    const queuePresences = await this.presenceRepository.find({
-      where: {
-        booth_id: booth.id,
-        tenant_id: tenantId,
-        status: 'online',
-        roleta_name: matchingRoleta.name,
-        attended_at: IsNull(),
-      },
-      relations: { broker: true },
-    });
-
-    const sortedQueue = queuePresences.sort((a, b) => {
-      const aPos = a.roleta_position ?? Number.MAX_SAFE_INTEGER;
-      const bPos = b.roleta_position ?? Number.MAX_SAFE_INTEGER;
-      if (aPos === bPos) {
-        return new Date(a.check_in_at).getTime() - new Date(b.check_in_at).getTime();
-      }
-      return aPos - bPos;
-    });
-    const positioned = sortedQueue.filter((p) => p.roleta_position !== null);
-    const notPositioned = sortedQueue.filter((p) => p.roleta_position === null);
-
-    const queue = [...positioned, ...notPositioned].map((p, index) => ({
-      presenceId: p.id,
-      brokerId: p.broker_id,
-      nomeGuerra: p.broker?.nome_guerra || 'Corretor',
-      roletaPosition: p.roleta_position,
-      effectivePosition: index + 1,
-      roletaEntryType: p.roleta_entry_type,
-      minutesActive: Math.max(0, Math.floor((Date.now() - new Date(p.validation_starts_at || p.check_in_at).getTime()) / 1000 / 60)),
-      checkInAt: p.check_in_at,
-    }));
+    const queue = await this.getEffectiveQueue(booth.id, tenantId, matchingRoleta.name);
 
     const awaitingRevalidation = await this.presenceRepository.find({
       where: {

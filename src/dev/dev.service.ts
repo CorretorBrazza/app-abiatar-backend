@@ -402,7 +402,7 @@ export class DevService {
   async getDatabaseStatus() {
     const startTime = Date.now();
     try {
-      const [migrations, indexes, enums, tables, columns, databaseSize] = await Promise.all([
+      const [migrations, indexes, enums, tables, columns, databaseSize, exactCounts] = await Promise.all([
         this.dataSource.query(
           `SELECT id, "timestamp" AS applied_at_ms, "name" FROM migrations ORDER BY id`,
         ),
@@ -421,6 +421,20 @@ export class DevService {
         this.dataSource.query(
           `SELECT pg_size_pretty(pg_database_size(current_database())) AS size_pretty, ROUND(pg_database_size(current_database())::numeric / 1024 / 1024, 1) AS size_mb`,
         ),
+        this.dataSource.query(
+          `SELECT k AS table_name, n AS row_count FROM (VALUES
+            ('tenants',(SELECT COUNT(*) FROM tenants)),
+            ('users',(SELECT COUNT(*) FROM users)),
+            ('booths',(SELECT COUNT(*) FROM booths)),
+            ('presences',(SELECT COUNT(*) FROM presences)),
+            ('dead_mans_switch_logs',(SELECT COUNT(*) FROM dead_mans_switch_logs)),
+            ('audit_logs',(SELECT COUNT(*) FROM audit_logs)),
+            ('messages',(SELECT COUNT(*) FROM messages)),
+            ('push_device_tokens',(SELECT COUNT(*) FROM push_device_tokens)),
+            ('booth_receptionists',(SELECT COUNT(*) FROM booth_receptionists)),
+            ('onboarding_links',(SELECT COUNT(*) FROM onboarding_links))
+          ) AS v(k, n)`,
+        ),
       ]);
 
       const indexByName = new Map<string, string>((indexes as Array<Record<string, any>>).map((i) => [i.indexname, i.indexdef]));
@@ -434,7 +448,12 @@ export class DevService {
         (c) => `${c.table_name}.${c.column_name}`,
       );
 
-      const rowByName = new Map<string, number>((tables as Array<{ table_name: string; live_rows: number }>).map((t) => [t.table_name, t.live_rows]));
+      const rowByName = new Map<string, number>(
+      (tables as Array<{ table_name: string; live_rows: number }>).map((t) => [t.table_name, t.live_rows]),
+    );
+    const exactCountsMap = new Map<string, number>(
+      (exactCounts as Array<{ table_name: string; row_count: string }>).map((t) => [t.table_name, Number(t.row_count)]),
+    );
 
       return {
         checkedAt: new Date().toISOString(),
@@ -459,14 +478,16 @@ export class DevService {
           users_broker_stage_column: columnPairs.includes('users.broker_stage'),
           presences_attended_columns: columnPairs.includes('presences.attended_at') && columnPairs.includes('presences.attended_by_user_id'),
           rowCounts: {
-            tenants: rowByName.get('tenants') ?? 0,
-            users: rowByName.get('users') ?? 0,
-            booths: rowByName.get('booths') ?? 0,
-            presences: rowByName.get('presences') ?? 0,
-            dead_mans_switch_logs: rowByName.get('dead_mans_switch_logs') ?? 0,
-            audit_logs: rowByName.get('audit_logs') ?? 0,
-            messages: rowByName.get('messages') ?? 0,
-            push_device_tokens: rowByName.get('push_device_tokens') ?? 0,
+            tenants: exactCountsMap.get('tenants') ?? 0,
+            users: exactCountsMap.get('users') ?? 0,
+            booths: exactCountsMap.get('booths') ?? 0,
+            presences: exactCountsMap.get('presences') ?? 0,
+            dead_mans_switch_logs: exactCountsMap.get('dead_mans_switch_logs') ?? 0,
+            audit_logs: exactCountsMap.get('audit_logs') ?? 0,
+            messages: exactCountsMap.get('messages') ?? 0,
+            push_device_tokens: exactCountsMap.get('push_device_tokens') ?? 0,
+            booth_receptionists: exactCountsMap.get('booth_receptionists') ?? 0,
+            onboarding_links: exactCountsMap.get('onboarding_links') ?? 0,
           },
         },
       };

@@ -33,5 +33,6 @@ import { AuthModule } from '../auth/auth.module';
   ],
   controllers: [PresencesController],
   providers: [PresencesService],
+  exports: [PresencesService],
 })
 export class PresencesModule {}

@@ -3,10 +3,13 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { Tenant } from '../tenants/tenant.entity';
 import { User } from '../users/user.entity';
 import { Booth } from '../booths/entities/booth.entity';
+import { BoothRuleSet } from '../booths/entities/booth-rule-set.entity';
+import { BoothWifi } from '../booths/entities/booth-wifi.entity';
 import { Presence } from '../presences/entities/presence.entity';
 import { DeadManLog } from '../presences/entities/dead-man-log.entity';
 import { AuditLog } from '../audit/entities/audit-log.entity';
 import { PushDeviceToken } from '../notifications/entities/push-device-token.entity';
+import { PresencesModule } from '../presences/presences.module';
 import { DevService } from './dev.service';
 import { DevController } from './dev.controller';
 
@@ -16,11 +19,14 @@ import { DevController } from './dev.controller';
       Tenant,
       User,
       Booth,
+      BoothRuleSet,
+      BoothWifi,
       Presence,
       DeadManLog,
       AuditLog,
       PushDeviceToken,
     ]),
+    PresencesModule,
   ],
   controllers: [DevController],
   providers: [DevService],

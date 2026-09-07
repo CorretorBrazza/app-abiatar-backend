@@ -17,6 +17,14 @@ export class TestPushDto {
 
   @IsOptional()
   @IsString()
+  userId?: string;
+
+  @IsOptional()
+  @IsString()
+  scope?: 'first5' | 'all';
+
+  @IsOptional()
+  @IsString()
   title?: string;
 
   @IsOptional()

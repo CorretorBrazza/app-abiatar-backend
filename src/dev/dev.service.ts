@@ -1204,13 +1204,14 @@ export class DevService {
 
     const started = Date.now();
     try {
-      const results = await this.dataSource.query(`BEGIN READ ONLY; SET LOCAL statement_timeout = '5000'; ${finalSql}; COMMIT;`);
-      const list = Array.isArray(results) ? results : [results];
-      let winner = list[0];
-      for (const r of list) {
-        if (Array.isArray(r) && Array.isArray(winner) && r.length >= winner.length) winner = r;
+      await this.dataSource.query(`BEGIN READ ONLY; SET LOCAL statement_timeout = '5000';`);
+      let rows: any[] = [];
+      try {
+        const result = await this.dataSource.query(finalSql);
+        rows = Array.isArray(result) ? result : [];
+      } finally {
+        await this.dataSource.query('COMMIT');
       }
-      const rows = Array.isArray(winner) ? winner : [];
       const columns = rows.length && typeof rows[0] === 'object' && rows[0] !== null ? Object.keys(rows[0]) : [];
       return {
         success: true,

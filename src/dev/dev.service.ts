@@ -430,9 +430,15 @@ export class DevService {
             ('dead_mans_switch_logs',(SELECT COUNT(*) FROM dead_mans_switch_logs)),
             ('audit_logs',(SELECT COUNT(*) FROM audit_logs)),
             ('messages',(SELECT COUNT(*) FROM messages)),
+            ('message_recipients',(SELECT COUNT(*) FROM message_recipients)),
             ('push_device_tokens',(SELECT COUNT(*) FROM push_device_tokens)),
             ('booth_receptionists',(SELECT COUNT(*) FROM booth_receptionists)),
-            ('onboarding_links',(SELECT COUNT(*) FROM onboarding_links))
+            ('booth_rule_sets',(SELECT COUNT(*) FROM booth_rule_sets)),
+            ('booth_holidays',(SELECT COUNT(*) FROM booth_holidays)),
+            ('booth_special_schedules',(SELECT COUNT(*) FROM booth_special_schedules)),
+            ('manager_onboarding_links',(SELECT COUNT(*) FROM manager_onboarding_links)),
+            ('weekly_period_reports',(SELECT COUNT(*) FROM weekly_period_reports)),
+            ('weekly_period_report_items',(SELECT COUNT(*) FROM weekly_period_report_items))
           ) AS v(k, n)`,
         ),
       ]);
@@ -487,7 +493,8 @@ export class DevService {
             messages: exactCountsMap.get('messages') ?? 0,
             push_device_tokens: exactCountsMap.get('push_device_tokens') ?? 0,
             booth_receptionists: exactCountsMap.get('booth_receptionists') ?? 0,
-            onboarding_links: exactCountsMap.get('onboarding_links') ?? 0,
+            booth_rule_sets: exactCountsMap.get('booth_rule_sets') ?? 0,
+            weekly_period_reports: exactCountsMap.get('weekly_period_reports') ?? 0,
           },
         },
       };

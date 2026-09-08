@@ -63,3 +63,13 @@ export function minutesToTimeString(totalMinutes: number): string {
   const m = normalized % 60;
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
+
+/**
+ * Constrói um Date UTC correspondente a um horário de parede (HH:mm) em uma data
+ * específica, no fuso informado. Assume offset fixo -03:00 para America/Sao_Paulo
+ * (Brasil não observa horário de verão desde 2019).
+ */
+export function getDateAtTimeInTimezone(dateStr: string, hhmm: string, timeZone = 'America/Sao_Paulo'): Date {
+  const offset = timeZone === 'America/Sao_Paulo' ? '-03:00' : '+00:00';
+  return new Date(`${dateStr}T${hhmm}:00${offset}`);
+}

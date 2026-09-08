@@ -17,7 +17,7 @@ import { Message } from '../messages/entities/message.entity'; // <-- ADICIONE E
 import { MessageRecipient } from '../messages/entities/message-recipient.entity';
 import { NotificationsService } from '../notifications/notifications.service';
 import { RealtimeService } from '../realtime/realtime.service';
-import { getNowInTimezone, timeStringToMinutes, minutesToTimeString, TimezoneNow } from '../utils/timezone.util';
+import { getNowInTimezone, timeStringToMinutes, minutesToTimeString, TimezoneNow, getDateAtTimeInTimezone } from '../utils/timezone.util';
 
 @Injectable()
 export class PresencesService {
@@ -54,6 +54,15 @@ export class PresencesService {
     private notificationsService: NotificationsService,
     private readonly realtimeService: RealtimeService,
   ) {}
+
+  /** Retorna os minutos efetivos de uma presença, incluindo o tempo em andamento para sessões 'online'. */
+  private getEffectiveMinutes(p: Presence, now: Date = new Date()): number {
+    if (p.status === 'online') {
+      const start = p.validation_starts_at || p.check_in_at;
+      return Math.max(0, Math.floor((now.getTime() - new Date(start).getTime()) / 1000 / 60));
+    }
+    return p.accumulated_minutes || 0;
+  }
 
   private async getHolidayForBoothAndDate(boothId: string, tenantId: string, targetDate: Date = new Date()): Promise<{ isHoliday: boolean; name?: string; roletaTime?: string }> {
     try {
@@ -208,13 +217,14 @@ export class PresencesService {
       }
 
       // Validação de frescor da coordenada GPS (Prevenção de cache antigo / fraude)
-      if (dto.capturedAt) {
-        const nowMs = Date.now();
-        const ageMs = nowMs - Number(dto.capturedAt);
-        const MAX_LOCATION_AGE_MS = 2 * 60 * 1000; // 2 minutos
-        if (ageMs > MAX_LOCATION_AGE_MS || ageMs < -30_000) {
-          throw new BadRequestException('A coordenada GPS informada está desatualizada ou com horário inconsistente. Obtenha uma nova localização e tente novamente.');
-        }
+      if (dto.capturedAt === undefined || dto.capturedAt === null) {
+        throw new BadRequestException('Timestamp da coordenada GPS não informado. Atualize o aplicativo e tente novamente.');
+      }
+      const nowMs = Date.now();
+      const ageMs = nowMs - Number(dto.capturedAt);
+      const MAX_LOCATION_AGE_MS = 2 * 60 * 1000; // 2 minutos
+      if (ageMs > MAX_LOCATION_AGE_MS || ageMs < -30_000) {
+        throw new BadRequestException('A coordenada GPS informada está desatualizada ou com horário inconsistente. Obtenha uma nova localização e tente novamente.');
       }
 
       const boothLat = Number(booth.latitude);
@@ -248,6 +258,7 @@ export class PresencesService {
     }
 
     const now = new Date();
+    const tzNowForRoleta = getNowInTimezone('America/Sao_Paulo');
     const { nowMinutes, roletaTimes, earlyMinutes, posBarraMinutes, matchingRoleta } = await this.resolveRoletaForBooth(booth);
 
     let assignedRoletaName = '';
@@ -274,13 +285,18 @@ export class PresencesService {
     assignedRoletaName = matchingRoleta.name;
     assignedDrawTimeStr = matchingRoleta.drawTimeFormatted;
 
+    // Âncora oficial: sempre o horário cheio cadastrado da roleta, nunca o timestamp real do check-in.
+    const roletaAnchor = matchingRoleta
+      ? getDateAtTimeInTimezone(tzNowForRoleta.dateStr, minutesToTimeString(matchingRoleta.roletaMinutes))
+      : now;
+
     if (matchingRoleta.isPontual) {
       assignedEntryType = 'pontual';
-      assignedValidationStartsAt = now;
+      assignedValidationStartsAt = roletaAnchor;
       assignedPosition = null; // Fica aguardando o sorteio automático exatamente às 09:01 / 13:31 / 14:01
     } else {
       assignedEntryType = 'pos_barra';
-      assignedValidationStartsAt = now; // No pós-barra, os 120 min contam a partir da chegada
+      assignedValidationStartsAt = roletaAnchor; // Mesma âncora do pontual: início sempre no horário cheio da roleta
       
       // Pós-Barra entra automaticamente no final da fila
       const existingInBooth = await this.presenceRepository.find({
@@ -731,11 +747,15 @@ export class PresencesService {
       }),
     );
 
+    const fullyEligibleCount = members.filter((m) => m.isEligibleSaturday && m.isEligibleSunday).length;
+    const noneEligibleCount = members.filter((m) => !m.isEligibleSaturday && !m.isEligibleSunday).length;
+
     return {
       totalTeamBrokers: brokers.length,
       saturdayEligibleCount,
       sundayEligibleCount,
-      inProgressCount: Math.max(0, brokers.length - saturdayEligibleCount),
+      fullyEligibleCount,
+      inProgressCount: noneEligibleCount, // não bateu NENHUM dos dois critérios ainda
       members,
     };
   }
@@ -841,13 +861,14 @@ export class PresencesService {
       }
 
       // Validação de frescor da coordenada GPS (Prevenção de cache antigo / fraude no dead man's switch)
-      if (dto.capturedAt) {
-        const nowMs = Date.now();
-        const ageMs = nowMs - Number(dto.capturedAt);
-        const MAX_LOCATION_AGE_MS = 2 * 60 * 1000; // 2 minutos
-        if (ageMs > MAX_LOCATION_AGE_MS || ageMs < -30_000) {
-          throw new BadRequestException('A coordenada GPS de confirmação está desatualizada ou com horário inconsistente. Obtenha nova localização e tente novamente.');
-        }
+      if (dto.capturedAt === undefined || dto.capturedAt === null) {
+        throw new BadRequestException('Timestamp da coordenada GPS não informado. Atualize o aplicativo e tente novamente.');
+      }
+      const nowMs = Date.now();
+      const ageMs = nowMs - Number(dto.capturedAt);
+      const MAX_LOCATION_AGE_MS = 2 * 60 * 1000; // 2 minutos
+      if (ageMs > MAX_LOCATION_AGE_MS || ageMs < -30_000) {
+        throw new BadRequestException('A coordenada GPS de confirmação está desatualizada ou com horário inconsistente. Obtenha nova localização e tente novamente.');
       }
 
       const boothLat = Number(booth.latitude);
@@ -1104,19 +1125,18 @@ export class PresencesService {
 
   // 8. Retorna métricas explícitas de períodos da semana atual (Segunda 00:00 a Sexta 23:59).
   private async getCurrentWeekPeriodMetrics(brokerId: string, tenantId: string, boothId?: string) {
-    const now = new Date();
-    const currentDay = now.getDay(); // 0 = Domingo, 1 = Segunda, ..., 6 = Sábado
-    
-    // Calcula o início da Segunda-feira da semana atual (00:00:00)
-    const mondayOffset = currentDay === 0 ? -6 : 1 - currentDay; // Ajuste se for Domingo
-    const startOfWeek = new Date(now);
-    startOfWeek.setDate(now.getDate() + mondayOffset);
-    startOfWeek.setHours(0, 0, 0, 0);
+    const tzNow = getNowInTimezone('America/Sao_Paulo');
+    const currentDay = tzNow.dayOfWeek; // 0 = Domingo, 1 = Segunda, ..., 6 = Sábado
 
-    // Calcula o final da Sexta-feira da semana atual (23:59:59)
-    const endOfFriday = new Date(startOfWeek);
-    endOfFriday.setDate(startOfWeek.getDate() + 4); // Segunda + 4 dias = Sexta
-    endOfFriday.setHours(23, 59, 59, 999);
+    // Calcula o início da Segunda-feira da semana atual ancorado em America/Sao_Paulo
+    const mondayOffset = currentDay === 0 ? -6 : 1 - currentDay; // Ajuste se for Domingo
+    const todayAnchor = getDateAtTimeInTimezone(tzNow.dateStr, '00:00');
+    const startOfWeek = new Date(todayAnchor);
+    startOfWeek.setUTCDate(startOfWeek.getUTCDate() + mondayOffset);
+
+    // Calcula o final da Sexta-feira da semana atual (23:59:59.999) em America/Sao_Paulo
+    // Usamos ms para evitar reintroduzir o bug com setHours (que opera no fuso local do processo)
+    const endOfFriday = new Date(startOfWeek.getTime() + 4 * 24 * 60 * 60 * 1000 + 23 * 60 * 60 * 1000 + 59 * 60 * 1000 + 59 * 1000 + 999);
 
     // Busca todas as presenças concluídas no intervalo de segunda a sexta desta semana
     const query = this.presenceRepository.createQueryBuilder('presence')
@@ -1163,8 +1183,7 @@ export class PresencesService {
     accumulatedOverride?: number,
     boothId?: string,
   ): Promise<{ eligible: boolean; checkInAllowedToday: boolean; enabled: boolean; accumulated: number; required: number }> {
-    const now = new Date();
-    const dayOfWeek = now.getDay(); // 0 = Domingo, 6 = Sábado
+    const dayOfWeek = getNowInTimezone('America/Sao_Paulo').dayOfWeek; // 0 = Domingo, 6 = Sábado
     const accumulated = accumulatedOverride !== undefined ? accumulatedOverride : await this.getAccumulatedPeriodsForCurrentWeek(brokerId, tenantId, boothId);
     const enabled = ruleSet?.weekend_enabled !== false;
     const saturdayRequired = ruleSet?.saturday_required_periods ?? 5;
@@ -1371,6 +1390,11 @@ export class PresencesService {
     }
 
     const now = new Date();
+    // Mesma âncora do check-in normal (item 2): sempre o horário cheio cadastrado da roleta, não o timestamp do clique.
+    const tzNowForRoleta = getNowInTimezone('America/Sao_Paulo');
+    const roletaAnchor = matchingRoleta
+      ? getDateAtTimeInTimezone(tzNowForRoleta.dateStr, minutesToTimeString(matchingRoleta.roletaMinutes))
+      : now;
     const assignedEntryType: 'pontual' | 'pos_barra' = matchingRoleta.isPontual ? 'pontual' : 'pos_barra';
     let assignedPosition: number | null = null;
     if (matchingRoleta.isPosBarra) {
@@ -1392,7 +1416,7 @@ export class PresencesService {
       roleta_name: matchingRoleta.name,
       roleta_entry_type: assignedEntryType,
       roleta_position: assignedPosition,
-      validation_starts_at: now,
+      validation_starts_at: roletaAnchor,
       check_in_at: now,
       last_confirmed_at: now,
       next_confirmation_at: this.getNextAlignedConfirmationAt(now),
@@ -1645,8 +1669,9 @@ export class PresencesService {
     });
 
     const now = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
-    const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+    const tzNow = getNowInTimezone('America/Sao_Paulo');
+    const todayStart = getDateAtTimeInTimezone(tzNow.dateStr, '00:00');
+    const todayEnd = new Date(todayStart.getTime() + 24 * 60 * 60 * 1000 - 1);
 
     const todayPresences = await this.presenceRepository.find({
       where: {
@@ -1705,7 +1730,7 @@ export class PresencesService {
     const activeBoothsCount = boothsReport.filter((b) => b.hasBrokers).length;
     const emptyBoothsCount = boothsReport.filter((b) => !b.hasBrokers).length;
     const understaffedBoothsCount = boothsReport.filter((b) => b.isUnderstaffed).length;
-    const totalTodayMinutes = todayPresences.reduce((acc, p) => acc + (p.accumulated_minutes || 0), 0);
+    const totalTodayMinutes = todayPresences.reduce((acc, p) => acc + this.getEffectiveMinutes(p, now), 0);
 
     return {
       updatedAt: now.toISOString(),
@@ -1783,6 +1808,16 @@ export class PresencesService {
       presencesByBroker.set(p.broker_id, list);
     }
 
+    // Pré-carrega booths e ruleSets fora do loop para evitar N×M queries ao banco
+    const boothsForEligibility = await this.boothRepository.find({
+      where: { tenant_id: tenantId, lifecycle_status: 'published' },
+      order: { name: 'ASC' },
+    });
+    const boothRuleSetsForReport = new Map<string, BoothRuleSet>();
+    for (const booth of boothsForEligibility) {
+      boothRuleSetsForReport.set(booth.id, await this.getRuleSetForBooth(booth));
+    }
+
     const report = await Promise.all(
       brokers.map(async (broker) => {
         const brokerPresences = presencesByBroker.get(broker.id) || [];
@@ -1792,7 +1827,7 @@ export class PresencesService {
         const onlineCount = brokerPresences.filter((p) => p.status === 'online').length;
         const pontualCount = brokerPresences.filter((p) => p.roleta_entry_type === 'pontual').length;
         const posBarraCount = brokerPresences.filter((p) => p.roleta_entry_type === 'pos_barra').length;
-        const totalMinutes = brokerPresences.reduce((acc, p) => acc + (p.accumulated_minutes || 0), 0);
+        const totalMinutes = brokerPresences.reduce((acc, p) => acc + this.getEffectiveMinutes(p, now), 0);
         const hours = Math.floor(totalMinutes / 60);
         const minutes = totalMinutes % 60;
 
@@ -1801,8 +1836,31 @@ export class PresencesService {
           ? Math.round((completedCount / (completedCount + invalidatedCount)) * 100)
           : 100;
 
-        const weeklyMetrics = await this.getCurrentWeekPeriodMetrics(broker.id, tenantId);
-        const weekendEligible = weeklyMetrics.validPeriods >= 5;
+        // Elegibilidade por plantão (usando pré-carga para evitar N×M queries)
+        const boothsStatus = await Promise.all(
+          boothsForEligibility.map(async (b) => {
+            const ruleSet = boothRuleSetsForReport.get(b.id)!;
+            const metrics = await this.getCurrentWeekPeriodMetrics(broker.id, tenantId, b.id);
+            const satReq = ruleSet.saturday_required_periods ?? 5;
+            const sunReq = ruleSet.sunday_required_periods ?? 6;
+            const satEligible = ruleSet.weekend_enabled !== false && metrics.validPeriods >= satReq;
+            const sunEligible = ruleSet.weekend_enabled !== false && metrics.validPeriods >= sunReq;
+            return {
+              boothId: b.id,
+              boothName: b.name,
+              validRoletasThisWeek: metrics.validPeriods,
+              saturdayRequired: satReq,
+              sundayRequired: sunReq,
+              saturdayEligible: satEligible,
+              sundayEligible: sunEligible,
+            };
+          }),
+        );
+        const weekendEligibleSaturday = boothsStatus.some((b) => b.saturdayEligible);
+        const weekendEligibleSunday = boothsStatus.some((b) => b.sundayEligible);
+        // Mantém weekendEligible como booleano de compatibilidade
+        const weekendEligible = weekendEligibleSaturday || weekendEligibleSunday;
+        const currentWeekValidRoletas = boothsStatus.length > 0 ? Math.max(...boothsStatus.map((b) => b.validRoletasThisWeek)) : 0;
 
         return {
           brokerId: broker.id,
@@ -1823,7 +1881,10 @@ export class PresencesService {
           punctualityRate,
           validationRate,
           weekendEligible,
-          currentWeekValidRoletas: weeklyMetrics.validPeriods,
+          weekendEligibleSaturday,
+          weekendEligibleSunday,
+          boothsStatus,
+          currentWeekValidRoletas,
         };
       }),
     );
@@ -1887,6 +1948,15 @@ export class PresencesService {
       presencesByBroker.set(p.broker_id, list);
     }
 
+    // Pré-carrega booths e ruleSets fora dos loops para evitar N×M queries
+    const boothsForManagerReport = await this.boothRepository.find({
+      where: { tenant_id: tenantId, lifecycle_status: 'published' },
+    });
+    const boothRuleSetsForManager = new Map<string, BoothRuleSet>();
+    for (const booth of boothsForManagerReport) {
+      boothRuleSetsForManager.set(booth.id, await this.getRuleSetForBooth(booth));
+    }
+
     const report = await Promise.all(
       managers.map(async (manager) => {
         const team = allBrokers.filter((b) => b.manager_id === manager.id);
@@ -1898,12 +1968,23 @@ export class PresencesService {
           team.map(async (b) => {
             const bPresences = presencesByBroker.get(b.id) || [];
             const checkIns = bPresences.length;
-            const minutes = bPresences.reduce((acc, p) => acc + (p.accumulated_minutes || 0), 0);
+            const minutes = bPresences.reduce((acc, p) => acc + this.getEffectiveMinutes(p, now), 0);
             teamTotalCheckIns += checkIns;
             teamTotalMinutes += minutes;
 
-            const weeklyMetrics = await this.getCurrentWeekPeriodMetrics(b.id, tenantId);
-            if (weeklyMetrics.validPeriods >= 5) {
+            // Elegibilidade: verificar se é elegível (sábado OU domingo) em pelo menos um plantão publicado
+            const isEligibleAnyBooth = (await Promise.all(
+              boothsForManagerReport.map(async (booth) => {
+                const ruleSet = boothRuleSetsForManager.get(booth.id)!;
+                const metrics = await this.getCurrentWeekPeriodMetrics(b.id, tenantId, booth.id);
+                const satReq = ruleSet.saturday_required_periods ?? 5;
+                const sunReq = ruleSet.sunday_required_periods ?? 6;
+                if (ruleSet.weekend_enabled === false) return false;
+                return metrics.validPeriods >= satReq || metrics.validPeriods >= sunReq;
+              }),
+            )).some(Boolean);
+
+            if (isEligibleAnyBooth) {
               teamWeekendEligibleCount += 1;
             }
 
@@ -1992,13 +2073,16 @@ export class PresencesService {
       const bPresences = presencesByBooth.get(booth.id) || [];
       const totalCheckIns = bPresences.length;
       const uniqueBrokers = new Set(bPresences.map((p) => p.broker_id)).size;
-      const totalMinutes = bPresences.reduce((acc, p) => acc + (p.accumulated_minutes || 0), 0);
+      const totalMinutes = bPresences.reduce((acc, p) => acc + this.getEffectiveMinutes(p, now), 0);
       const hours = Math.floor(totalMinutes / 60);
       const minutes = totalMinutes % 60;
 
       const hourCounts: Record<number, number> = {};
       for (const p of bPresences) {
-        const h = new Date(p.check_in_at).getHours();
+        const h = Number(
+          new Intl.DateTimeFormat('en-US', { timeZone: 'America/Sao_Paulo', hour: 'numeric', hour12: false })
+            .format(new Date(p.check_in_at))
+        ) % 24;
         hourCounts[h] = (hourCounts[h] || 0) + 1;
       }
       let peakHour: number | null = null;

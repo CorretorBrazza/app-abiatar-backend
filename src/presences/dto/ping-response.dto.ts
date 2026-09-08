@@ -19,8 +19,7 @@ export class PingResponseDto {
   @Length(1, 100)
   ssid?: string;
 
-  @IsOptional()
   @Type(() => Number)
   @IsNumber()
-  capturedAt?: number;
+  capturedAt: number;
 }

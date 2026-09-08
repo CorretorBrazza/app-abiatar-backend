@@ -222,8 +222,8 @@ export class PresencesService {
       }
       const nowMs = Date.now();
       const ageMs = nowMs - Number(dto.capturedAt);
-      const MAX_LOCATION_AGE_MS = 2 * 60 * 1000; // 2 minutos
-      if (ageMs > MAX_LOCATION_AGE_MS || ageMs < -30_000) {
+      const MAX_LOCATION_AGE_MS = 5 * 60 * 1000; // 5 minutos (folga p/ latencia e clock skew do aparelho)
+      if (ageMs > MAX_LOCATION_AGE_MS || ageMs < -5 * 60 * 1000) {
         throw new BadRequestException('A coordenada GPS informada está desatualizada ou com horário inconsistente. Obtenha uma nova localização e tente novamente.');
       }
 
@@ -866,8 +866,8 @@ export class PresencesService {
       }
       const nowMs = Date.now();
       const ageMs = nowMs - Number(dto.capturedAt);
-      const MAX_LOCATION_AGE_MS = 2 * 60 * 1000; // 2 minutos
-      if (ageMs > MAX_LOCATION_AGE_MS || ageMs < -30_000) {
+      const MAX_LOCATION_AGE_MS = 5 * 60 * 1000; // 5 minutos (folga p/ latencia e clock skew do aparelho)
+      if (ageMs > MAX_LOCATION_AGE_MS || ageMs < -5 * 60 * 1000) {
         throw new BadRequestException('A coordenada GPS de confirmação está desatualizada ou com horário inconsistente. Obtenha nova localização e tente novamente.');
       }
 

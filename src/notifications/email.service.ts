@@ -195,4 +195,81 @@ export class EmailService {
       attachments,
     });
   }
+
+  async sendBrokerDocumentCorrectionRequest(params: {
+    brokerName: string;
+    brokerNomeGuerra: string;
+    brokerEmail: string;
+    brokerStage: string;
+    managerNomeGuerra: string;
+    tenantName?: string;
+    message: string;
+  }): Promise<boolean> {
+    const stageLabels: Record<string, string> = {
+      treinamento: '🔵 Corretor em Treinamento (Sem CRECI)',
+      estagiario: '🟡 Corretor Estagiário (CRECI Estágio)',
+      corretor_creci: '🟢 Corretor CRECI (Definitivo)',
+    };
+    const stageLabel = stageLabels[params.brokerStage] || params.brokerStage;
+
+    const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f4f4f5; margin: 0; padding: 24px; color: #18181b; }
+        .container { max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 12px; overflow: hidden; border: 1px solid #e4e4e7; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
+        .header { background: #b45309; color: #ffffff; padding: 24px; text-align: center; }
+        .header h1 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: 0.5px; }
+        .header p { margin: 6px 0 0 0; font-size: 13px; color: #fde68a; }
+        .content { padding: 28px; }
+        .badge { display: inline-block; padding: 6px 12px; background: #fffbeb; color: #b45309; font-weight: 700; border-radius: 6px; font-size: 13px; margin-bottom: 20px; border: 1px solid #fcd34d; }
+        .message-box { background: #fffbeb; border-left: 4px solid #f59e0b; border-radius: 8px; padding: 16px; margin-bottom: 24px; font-size: 14px; line-height: 22px; color: #1e293b; }
+        .notice { background: #f8fafc; border: 1px dashed #cbd5e1; border-radius: 8px; padding: 16px; margin-bottom: 24px; font-size: 14px; line-height: 20px; color: #0f172a; }
+        .notice strong { color: #b45309; }
+        .footer { background: #fafafa; padding: 16px 28px; font-size: 12px; color: #a1a1aa; text-align: center; border-top: 1px solid #f4f4f5; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>ABIATAR · CORREÇÃO DE DOCUMENTAÇÃO</h1>
+          <p>Triagem de Recursos Humanos</p>
+        </div>
+        <div class="content">
+          <div class="badge">Ação necessária no seu cadastro</div>
+          <p style="font-size: 14px; line-height: 20px; margin-bottom: 20px;">
+            Olá, <strong>${params.brokerNomeGuerra}</strong>! Recebemos o seu cadastro (<strong>${stageLabel}</strong>)
+            e, na conferência dos documentos, o RH identificou um ajuste necessário:
+          </p>
+
+          <div class="message-box">
+            ${params.message}
+          </div>
+
+          <div class="notice">
+            ⚠️ <strong>Não responda este e-mail.</strong> Envie a documentação que está faltando para
+            <strong>gestaoautonomos@abiatar.com</strong>, informando seu nome completo e nome de guerra
+            (<strong>${params.brokerNomeGuerra}</strong>) para agilizar a validação.
+          </div>
+
+          <p style="font-size: 13px; color: #52525b; line-height: 18px;">
+            Dúvidas? Fale com o Gerente <strong>${params.managerNomeGuerra}</strong> ou com o RH da ${params.tenantName || 'empresa'}.
+          </p>
+        </div>
+        <div class="footer">
+          ABIATAR Sistema Imobiliário · Notificação de Triagem Documental
+        </div>
+      </div>
+    </body>
+    </html>
+    `;
+
+    return this.sendEmail({
+      to: params.brokerEmail,
+      subject: `[ABIATAR] Correção de documentação no seu cadastro · ${params.brokerNomeGuerra}`,
+      html,
+    });
+  }
 }

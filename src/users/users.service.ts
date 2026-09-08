@@ -753,6 +753,51 @@ export class UsersService implements OnModuleInit {
     };
   }
 
+  // RH / Diretoria solicita correção de documentos enviando e-mail ao corretor (com instrução fixa de envio)
+  async notifyBrokerDocumentCorrection(
+    brokerId: string,
+    dto: { message: string },
+    actor: { sub: string; role: string },
+    tenantId: string,
+  ) {
+    if (!['diretoria_level_1', 'platform_admin_level_0', 'rh_level_2', 'rh_level_1'].includes(actor.role)) {
+      throw new ForbiddenException('Somente a Diretoria e o RH podem solicitar correção de documentos.');
+    }
+
+    const broker = await this.userRepository.findOne({
+      where: { id: brokerId, tenant_id: tenantId, role: 'corretor_level_3' },
+    });
+    if (!broker || broker.removed_at) throw new NotFoundException('Corretor não encontrado ou já removido.');
+
+    const manager = broker.manager_id ? await this.userRepository.findOne({ where: { id: broker.manager_id, tenant_id: tenantId } }) : null;
+    const currentTenant = await this.tenantRepository.findOne({ where: { id: tenantId } });
+
+    const sent = await this.emailService.sendBrokerDocumentCorrectionRequest({
+      brokerName: broker.name,
+      brokerNomeGuerra: broker.nome_guerra,
+      brokerEmail: broker.email,
+      brokerStage: broker.broker_stage || 'treinamento',
+      managerNomeGuerra: manager?.nome_guerra || manager?.name || 'Sem gerente',
+      tenantName: currentTenant?.name || 'ABIATAR',
+      message: dto.message.trim(),
+    });
+
+    void this.auditService.record({ tenantId, actorUserId: actor.sub, actorRole: actor.role }, {
+      action: 'BROKER_DOC_CORRECTION_REQUESTED', entityType: 'USER', entityId: broker.id,
+      beforeData: { brokerEmail: broker.email, status: broker.status },
+      afterData: { brokerEmail: broker.email, message: dto.message.trim(), emailSent: sent },
+      reason: 'Solicitação de correção de documentos enviada por e-mail ao corretor',
+    });
+
+    return {
+      message: sent
+        ? `Correção solicitada por e-mail para ${broker.nome_guerra}.`
+        : 'Não foi possível enviar o e-mail (verifique a configuração de e-mail). A solicitação foi registrada.',
+      brokerEmail: broker.email,
+      emailSent: sent,
+    };
+  }
+
   // RH / Diretoria exclui definitivamente (Hard Delete) para liberar Nome de Guerra e E-mail imediatamente
   async hardDeleteBroker(brokerId: string, actor: { sub: string; role: string }, tenantId: string) {
     if (!['diretoria_level_1', 'platform_admin_level_0', 'rh_level_2', 'rh_level_1'].includes(actor.role)) {

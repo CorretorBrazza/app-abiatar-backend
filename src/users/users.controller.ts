@@ -8,6 +8,7 @@ import { CreateReceptionistDto } from './dto/create-receptionist.dto';
 import { CreateOnboardingLinkDto } from './dto/create-onboarding-link.dto';
 import { RegisterManagerDto } from './dto/register-manager.dto';
 import { TransferBrokerDto, UpdateBrokerLeadPauseDto, UpdateBrokerProfileDto, UpdateBrokerStageDto } from './dto/update-broker-profile.dto';
+import { NotifyBrokerCorrectionDto } from './dto/notify-broker-correction.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { TenantId } from '../auth/decorators/tenant-id.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -207,6 +208,18 @@ export class UsersController {
     @TenantId() tenantId: string,
   ) {
     return this.usersService.updateBrokerByHr(brokerId, dto, currentUser, tenantId);
+  }
+
+  // Triagem do RH / Diretoria: Envia e-mail ao corretor solicitando correção de documentos
+  @Post(':id/hr-notify-correction')
+  @UseGuards(JwtAuthGuard)
+  async notifyBrokerDocumentCorrection(
+    @Param('id') brokerId: string,
+    @Body() dto: NotifyBrokerCorrectionDto,
+    @CurrentUser() currentUser: { sub: string; role: string },
+    @TenantId() tenantId: string,
+  ) {
+    return this.usersService.notifyBrokerDocumentCorrection(brokerId, dto, currentUser, tenantId);
   }
 
   // Triagem do RH / Diretoria: Exclusão definitiva para liberar Nome de Guerra e E-mail imediatamente

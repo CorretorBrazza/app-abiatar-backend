@@ -505,7 +505,7 @@ export class UsersService implements OnModuleInit {
 
   async getManagementUser(userId: string, tenantId: string) {
     const user = await this.userRepository.findOne({
-      where: { id: userId, tenant_id: tenantId, role: In(['gerencia_level_2', 'recepcao_level_3']), removed_at: IsNull() },
+      where: { id: userId, tenant_id: tenantId, role: In(['gerencia_level_2', 'recepcao_level_3', 'rh_level_1', 'rh_level_2']), removed_at: IsNull() },
       select: { id: true, name: true, nome_guerra: true, email: true, role: true, status: true, manager_id: true },
     });
     if (!user) throw new NotFoundException('Usuário de gestão não encontrado.');
@@ -513,7 +513,7 @@ export class UsersService implements OnModuleInit {
   }
 
   async removeManagementUser(userId: string, reason: string, actor: { sub: string; role: string }, tenantId: string) {
-    const user = await this.userRepository.findOne({ where: { id: userId, tenant_id: tenantId, role: In(['gerencia_level_2', 'recepcao_level_3']), removed_at: IsNull() } });
+    const user = await this.userRepository.findOne({ where: { id: userId, tenant_id: tenantId, role: In(['gerencia_level_2', 'recepcao_level_3', 'rh_level_1', 'rh_level_2']), removed_at: IsNull() } });
     if (!user) throw new NotFoundException('Usuário de gestão não encontrado ou já removido.');
     const before = { status: user.status, role: user.role, manager_id: user.manager_id };
     user.status = 'inactive';
@@ -535,7 +535,7 @@ export class UsersService implements OnModuleInit {
     dto: { name?: string; nomeGuerra?: string; email?: string; password?: string; mustChangePassword?: boolean },
     tenantId: string,
   ) {
-    const user = await this.userRepository.findOne({ where: { id: userId, tenant_id: tenantId, role: In(['gerencia_level_2', 'recepcao_level_3']), removed_at: IsNull() } });
+    const user = await this.userRepository.findOne({ where: { id: userId, tenant_id: tenantId, role: In(['gerencia_level_2', 'recepcao_level_3', 'rh_level_1', 'rh_level_2']), removed_at: IsNull() } });
     if (!user) throw new NotFoundException('Usuário de gestão não encontrado.');
     if (dto.name?.trim()) user.name = dto.name.trim();
     if (dto.nomeGuerra?.trim()) {

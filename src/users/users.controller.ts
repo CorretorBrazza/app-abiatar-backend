@@ -143,7 +143,7 @@ export class UsersController {
     @TenantId() tenantId: string,
   ) {
     if (currentUser.role !== 'diretoria_level_1') {
-      throw new ForbiddenException('Somente a Diretoria pode excluir Gerentes ou Recepção.');
+      throw new ForbiddenException('Somente a Diretoria pode excluir Gerentes, Recepção ou RH.');
     }
     return this.usersService.removeManagementUser(userId, body?.reason || 'Exclusão solicitada pela Diretoria', currentUser, tenantId);
   }

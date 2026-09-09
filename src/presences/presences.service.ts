@@ -1476,18 +1476,49 @@ export class PresencesService {
 
     // Respeita fielmente a janela da roleta do momento (mesma lógica do check-in normal)
     const { ruleSet, matchingRoleta, roletaTimes, earlyMinutes, posBarraMinutes } = await this.resolveRoletaForBooth(booth);
-    if (!matchingRoleta) {
-      const allowedWindows = roletaTimes.map((r) => {
-        const roletaMin = timeStringToMinutes(r.time);
-        const earlyStr = minutesToTimeString(roletaMin - earlyMinutes);
-        const drawStr = minutesToTimeString(roletaMin + 1);
-        const endStr = minutesToTimeString(roletaMin + posBarraMinutes);
-        return `${r.name} (Check-in das ${earlyStr} às ${endStr} · Sorteio às ${drawStr})`;
-      }).join(' | ');
 
-      throw new BadRequestException(
-        `Check-in fora do horário permitido para o plantão '${booth.name}'. Janelas de Check-in hoje: ${allowedWindows}.`,
-      );
+    // Fora da janela de check-in/pós-barra ainda pode haver corretores online aguardando
+    // atendimento. Permite o check-in manual ao final da fila da roleta mais frequente dessas
+    // presenças, em vez de bloquear a recepção.
+    let roletaName = matchingRoleta?.name || null;
+    if (!roletaName) {
+      const activeInBooth = await this.presenceRepository.find({
+        where: { booth_id: booth.id, tenant_id: tenantId, status: 'online', attended_at: IsNull() },
+      });
+      if (activeInBooth.length === 0) {
+        const allowedWindows = roletaTimes.map((r) => {
+          const roletaMin = timeStringToMinutes(r.time);
+          const earlyStr = minutesToTimeString(roletaMin - earlyMinutes);
+          const drawStr = minutesToTimeString(roletaMin + 1);
+          const endStr = minutesToTimeString(roletaMin + posBarraMinutes);
+          return `${r.name} (Check-in das ${earlyStr} às ${endStr} · Sorteio às ${drawStr})`;
+        }).join(' | ');
+
+        throw new BadRequestException(
+          `Check-in fora do horário permitido para o plantão '${booth.name}'. Janelas de Check-in hoje: ${allowedWindows}.`,
+        );
+      }
+      const roletaCounts = new Map<string, number>();
+      let maxName: string | null = null;
+      let maxCount = 0;
+      for (const p of activeInBooth) {
+        if (!p.roleta_name) continue;
+        const count = (roletaCounts.get(p.roleta_name) || 0) + 1;
+        roletaCounts.set(p.roleta_name, count);
+        if (count > maxCount) {
+          maxCount = count;
+          maxName = p.roleta_name;
+        }
+      }
+      roletaName = maxName;
+      if (!roletaName) {
+        throw new BadRequestException(
+          `Check-in fora do horário permitido para o plantão '${booth.name}'. Janelas de Check-in hoje: ${roletaTimes.map((r) => {
+            const roletaMin = timeStringToMinutes(r.time);
+            return `${r.name} (das ${minutesToTimeString(roletaMin - earlyMinutes)} às ${minutesToTimeString(roletaMin + posBarraMinutes)})`;
+          }).join(' | ')}.`,
+        );
+      }
     }
 
     const now = new Date();
@@ -1496,11 +1527,11 @@ export class PresencesService {
     const roletaAnchor = matchingRoleta
       ? getDateAtTimeInTimezone(tzNowForRoleta.dateStr, minutesToTimeString(matchingRoleta.roletaMinutes))
       : now;
-    const assignedEntryType: 'pontual' | 'pos_barra' = matchingRoleta.isPontual ? 'pontual' : 'pos_barra';
+    const assignedEntryType: 'pontual' | 'pos_barra' = matchingRoleta?.isPontual ? 'pontual' : 'pos_barra';
     let assignedPosition: number | null = null;
-    if (matchingRoleta.isPosBarra) {
+    if (assignedEntryType === 'pos_barra' || !matchingRoleta) {
       const existingInBooth = await this.presenceRepository.find({
-        where: { booth_id: booth.id, tenant_id: tenantId, status: 'online', roleta_name: matchingRoleta.name },
+        where: { booth_id: booth.id, tenant_id: tenantId, status: 'online', roleta_name: roletaName },
       });
       const maxPos = existingInBooth.reduce((max, p) => Math.max(max, p.roleta_position || 0), 0);
       assignedPosition = maxPos + 1;
@@ -1514,7 +1545,7 @@ export class PresencesService {
       minimum_period_minutes: ruleSet.minimum_period_minutes,
       period_weight: ruleSet.period_weight,
       minimum_monthly_periods: ruleSet.minimum_monthly_periods,
-      roleta_name: matchingRoleta.name,
+      roleta_name: roletaName,
       roleta_entry_type: assignedEntryType,
       roleta_position: assignedPosition,
       validation_starts_at: roletaAnchor,
@@ -1536,7 +1567,7 @@ export class PresencesService {
         status: saved.status,
         roletaPosition: saved.roleta_position,
         roletaEntryType: saved.roleta_entry_type,
-        drawTimeFormatted: matchingRoleta.drawTimeFormatted,
+        drawTimeFormatted: matchingRoleta ? matchingRoleta.drawTimeFormatted : null,
         nextConfirmationAt: saved.next_confirmation_at,
       },
     });
@@ -1544,7 +1575,7 @@ export class PresencesService {
       broker.id,
       tenantId,
       'Check-in registrado pela recepção',
-      `Você está ativo no plantão '${booth.name}' na ${matchingRoleta.name}. Sorteio às ${matchingRoleta.drawTimeFormatted}.`,
+      `Você está ativo no plantão '${booth.name}' na ${roletaName}. Sorteio às ${matchingRoleta ? matchingRoleta.drawTimeFormatted : '—'}.`,
       { type: 'force_checkin', presenceId: saved.id, boothId: booth.id },
     );
     void this.processRoletaDraws();
@@ -1552,7 +1583,7 @@ export class PresencesService {
     return {
       message: assignedEntryType === 'pos_barra'
         ? `Check-in registrado para '${broker.nome_guerra}'. Pós-Barra: ${assignedPosition}º Lugar no final da fila.`
-        : `Check-in registrado para '${broker.nome_guerra}' na ${matchingRoleta.name}. Sorteio às ${matchingRoleta.drawTimeFormatted}.`,
+        : `Check-in registrado para '${broker.nome_guerra}' na ${roletaName}. Sorteio às ${matchingRoleta ? matchingRoleta.drawTimeFormatted : '—'}.`,
       presence: {
         id: saved.id,
         boothId: booth.id,
@@ -1563,7 +1594,7 @@ export class PresencesService {
         roletaPosition: saved.roleta_position,
         roletaName: saved.roleta_name,
         checkInAt: saved.check_in_at,
-        drawTimeFormatted: matchingRoleta.drawTimeFormatted,
+        drawTimeFormatted: matchingRoleta ? matchingRoleta.drawTimeFormatted : null,
       },
     };
   }
@@ -1713,25 +1744,54 @@ export class PresencesService {
 
     await this.assertCanOperateBooth(actor, tenantId, booth.id);
 
+    const emptyQueue = {
+      boothId: booth.id,
+      boothName: booth.name,
+      currentRoleta: null,
+      queue: [],
+      awaitingRevalidation: [],
+    };
+
     const { matchingRoleta } = await this.resolveRoletaForBooth(booth);
-    if (!matchingRoleta) {
-      return {
-        boothId: booth.id,
-        boothName: booth.name,
-        currentRoleta: null,
-        queue: [],
-        awaitingRevalidation: [],
-      };
+
+    // Fora da janela de check-in/pós-barra não há roleta resolvida, mas corretores que já estão
+    // online no plantão AINDA aguardam atendimento. Mantém a sequência de atendimento visível,
+    // recuperando a roleta mais frequente entre essas presenças para não "sumir" com os botões.
+    let roletaName = matchingRoleta?.name || null;
+    let drawTimeFormatted = matchingRoleta?.drawTimeFormatted || null;
+
+    if (!roletaName) {
+      const pendingOnline = await this.presenceRepository.find({
+        where: { booth_id: booth.id, tenant_id: tenantId, status: 'online', attended_at: IsNull() },
+        relations: { broker: true },
+      });
+      const roletaCounts = new Map<string, number>();
+      let maxName: string | null = null;
+      let maxCount = 0;
+      for (const p of pendingOnline) {
+        if (!p.roleta_name) continue;
+        const count = (roletaCounts.get(p.roleta_name) || 0) + 1;
+        roletaCounts.set(p.roleta_name, count);
+        if (count > maxCount) {
+          maxCount = count;
+          maxName = p.roleta_name;
+        }
+      }
+      roletaName = maxName;
     }
 
-    const queue = await this.getEffectiveQueue(booth.id, tenantId, matchingRoleta.name);
+    if (!roletaName) {
+      return emptyQueue;
+    }
+
+    const queue = await this.getEffectiveQueue(booth.id, tenantId, roletaName);
 
     const awaitingRevalidation = await this.presenceRepository.find({
       where: {
         booth_id: booth.id,
         tenant_id: tenantId,
         status: 'absent',
-        roleta_name: matchingRoleta.name,
+        roleta_name: roletaName,
       },
       relations: { broker: true },
       order: { check_in_at: 'ASC' },
@@ -1741,9 +1801,9 @@ export class PresencesService {
       boothId: booth.id,
       boothName: booth.name,
       currentRoleta: {
-        name: matchingRoleta.name,
-        drawTimeFormatted: matchingRoleta.drawTimeFormatted,
-        phase: matchingRoleta.isPontual ? 'aguardando_sorteio' : 'apos_sorteio',
+        name: roletaName,
+        drawTimeFormatted,
+        phase: matchingRoleta?.isPontual ? 'aguardando_sorteio' : 'apos_sorteio',
       },
       queue,
       awaitingRevalidation: awaitingRevalidation.map((p) => ({

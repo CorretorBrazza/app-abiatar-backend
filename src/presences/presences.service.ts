@@ -147,12 +147,72 @@ export class PresencesService {
     return Math.max(0, Math.min(5, Number(ruleSet.ping_response_deadline_minutes ?? 5)));
   }
 
+  // Determina se uma presença está abandonada (zumbi): sem qualquer confirmação recente.
+  // Usa os intervalos configurados do plantão + folga, com piso de segurança.
+  private isPresenceStale(presence: { status: string; last_confirmed_at: Date | null; check_in_at: Date; check_out_at?: Date | null }, ruleSet?: BoothRuleSet, now: Date = new Date()): boolean {
+    if (presence.status !== 'online' && presence.status !== 'absent') return false;
+    const intervalMinutes = Number(ruleSet?.ping_interval_minutes ?? 25);
+    const deadlineMinutes = Number(ruleSet?.ping_response_deadline_minutes ?? 5);
+    const maxIdleMinutes = Math.max(60, intervalMinutes + deadlineMinutes + 90);
+    const anchor = presence.last_confirmed_at || presence.check_in_at || presence.check_out_at;
+    if (!anchor) return false;
+    const idleMinutes = Math.floor((now.getTime() - new Date(anchor).getTime()) / 1000 / 60);
+    return idleMinutes > maxIdleMinutes;
+  }
+
+  // Finaliza automaticamente períodos antigos abandonados (online/absent) validando apenas até a última confirmação.
+  private async autoFinalizeStalePresences(brokerId: string, tenantId: string, currentNow: Date = new Date()) {
+    const stalePresences = await this.presenceRepository.find({
+      where: [
+        { broker_id: brokerId, tenant_id: tenantId, status: 'online' },
+        { broker_id: brokerId, tenant_id: tenantId, status: 'absent' },
+      ],
+      order: { check_in_at: 'DESC' },
+    });
+
+    for (const presence of stalePresences) {
+      const booth = presence.booth_id
+        ? await this.boothRepository.findOne({ where: { id: presence.booth_id, tenant_id: tenantId } })
+        : null;
+      const ruleSet = booth ? await this.getRuleSetForBooth(booth) : undefined;
+
+      if (!this.isPresenceStale(presence, ruleSet, currentNow)) continue;
+
+      const countStart = presence.validation_starts_at || presence.check_in_at;
+      const countEnd = presence.last_confirmed_at || presence.check_in_at || countStart;
+      const diffInMs = Math.max(0, countEnd.getTime() - countStart.getTime());
+      const accumulatedMinutes = Math.max(0, Math.floor(diffInMs / 1000 / 60));
+
+      presence.accumulated_minutes = accumulatedMinutes;
+      presence.check_out_at = countEnd;
+      presence.status = accumulatedMinutes >= Number(presence.minimum_period_minutes || 120) ? 'completed' : 'invalidated';
+      const saved = await this.presenceRepository.save(presence);
+
+      // Encerra pings pendentes para impedir que um ping antigo "reviva" a presença finalizada
+      const pendingPings = await this.logRepository.find({
+        where: { presence_id: presence.id, response_status: 'pending' },
+      });
+      for (const p of pendingPings) {
+        p.response_status = 'no_response';
+        p.responded_at = currentNow;
+        await this.logRepository.save(p);
+      }
+
+      this.realtimeService.publish({ eventType: 'presence.checked_out', tenantId, aggregateId: saved.id, payload: { brokerId, boothId: saved.booth_id, status: saved.status, accumulatedMinutes: saved.accumulated_minutes, reason: 'auto_finalized' } });
+      console.log(`[AUTO-FINALIZE] Presença ${saved.id} (${saved.status}) finalizada automaticamente ao iniciar novo período.`);
+    }
+  }
+
   // 2. Realiza o Check-in com validação por Dupla Camada (GPS ou Wi-Fi)
   async checkIn(dto: CheckInDto, brokerId: string, tenantId: string) {
 
   
 
-    // A. Verifica se o corretor já possui um check-in ativo ("online") no momento
+    // A. Auto-limpeza: finaliza períodos antigos abandonados (online/absent de outro dia ou janela)
+    // antes de permitir um novo check-in. O Tempo validado para estes períodos fica limitado à última confirmação.
+    await this.autoFinalizeStalePresences(brokerId, tenantId);
+
+    // A0. Verifica se o corretor já possui um check-in ativo ("online") no momento
     const activePresence = await this.presenceRepository.findOne({
       where: { broker_id: brokerId, tenant_id: tenantId, status: 'online' },
     });
@@ -499,7 +559,13 @@ export class PresencesService {
 
     const now = new Date();
     const countStart = activePresence.validation_starts_at || activePresence.check_in_at;
-    const diffInMs = now.getTime() - countStart.getTime();
+    // Presenças suspensas (absent) não podem contabilizar o período de inatividade:
+    // valida apenas até a última confirmação de permanência.
+    const countEnd =
+      activePresence.status === 'absent'
+        ? (activePresence.last_confirmed_at || activePresence.check_in_at)
+        : now;
+    const diffInMs = Math.max(0, countEnd.getTime() - countStart.getTime());
     const elapsedMinutes = Math.max(0, Math.floor(diffInMs / 1000 / 60));
 
     activePresence.check_out_at = now;
@@ -507,6 +573,16 @@ export class PresencesService {
     activePresence.status = elapsedMinutes >= activePresence.minimum_period_minutes ? 'completed' : 'invalidated';
 
     const savedPresence = await this.presenceRepository.save(activePresence);
+
+    // Encerra pings pendentes do período finalizado para evitar respostas tardias
+    const leftoverPings = await this.logRepository.find({
+      where: { presence_id: activePresence.id, response_status: 'pending' },
+    });
+    for (const leftover of leftoverPings) {
+      leftover.response_status = 'no_response';
+      leftover.responded_at = now;
+      await this.logRepository.save(leftover);
+    }
     this.realtimeService.publish({ eventType: 'presence.checked_out', tenantId, aggregateId: savedPresence.id, payload: { brokerId, boothId: savedPresence.booth_id, status: savedPresence.status, accumulatedMinutes: savedPresence.accumulated_minutes } });
 
     // DISPARA O ALERTA PREDITIVO DE COBERTURA BAIXA NA SAÍDA DO CORRETOR [6]
@@ -775,6 +851,13 @@ export class PresencesService {
         order: { check_in_at: 'DESC' },
       });
       if (suspendedPresence) {
+        // Se a suspensão é antiga (zumbi), finaliza automaticamente e libera um novo check-in
+        const booth = suspendedPresence.booth || null;
+        const ruleSet = booth ? await this.getRuleSetForBooth(booth) : undefined;
+        if (this.isPresenceStale(suspendedPresence, ruleSet)) {
+          await this.autoFinalizeStalePresences(brokerId, tenantId);
+          return { hasActiveSession: false, presence: null };
+        }
         return {
           hasActiveSession: true,
           presence: {
@@ -802,6 +885,12 @@ export class PresencesService {
       where: { presence_id: activePresence.id, response_status: 'pending' },
       order: { sent_at: 'DESC' },
     });
+
+    // Presença online abandonada (zumbi): finaliza e libera novo check-in
+    if (this.isPresenceStale(activePresence, activePresence.booth ? await this.getRuleSetForBooth(activePresence.booth) : undefined)) {
+      await this.autoFinalizeStalePresences(brokerId, tenantId);
+      return { hasActiveSession: false, presence: null };
+    }
 
     return {
       hasActiveSession: true,
@@ -833,6 +922,11 @@ export class PresencesService {
     // Valida se o ping pertence ao corretor que está respondendo
     if (ping.presence.broker_id !== brokerId) {
       throw new BadRequestException('Este ping não pertence ao seu usuário.');
+    }
+
+    // Presenças finalizadas (checkout/auto-finalização) não podem ser reativadas por um ping antigo
+    if (ping.presence.status !== 'online' && ping.presence.status !== 'absent') {
+      throw new BadRequestException('Este período já foi finalizado. Faça um novo check-in para iniciar um novo turno.');
     }
 
     const booth = ping.presence.booth;
@@ -1076,6 +1170,12 @@ export class PresencesService {
           pendingPing.response_status = 'no_response';
           await this.logRepository.save(pendingPing);
 
+          // Congela o tempo validado até a última confirmação: o período não confirmado não conta.
+          const countStart = presence.validation_starts_at || presence.check_in_at;
+          const countEnd = presence.last_confirmed_at || presence.check_in_at || countStart;
+          const frozenMinutes = Math.max(0, Math.floor((Math.max(0, countEnd.getTime() - countStart.getTime())) / 1000 / 60));
+          presence.accumulated_minutes = frozenMinutes;
+          presence.check_out_at = countEnd;
           presence.status = 'absent'; // Presença suspensa [8]
           await this.presenceRepository.save(presence);
           this.realtimeService.publish({ eventType: 'presence.absent', tenantId: presence.tenant_id, aggregateId: presence.id, payload: { brokerId: presence.broker_id, boothId: presence.booth_id, reason: 'no_response' } });

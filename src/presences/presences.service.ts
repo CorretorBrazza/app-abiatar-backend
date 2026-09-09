@@ -203,14 +203,15 @@ export class PresencesService {
     }
   }
 
-  // Manutenção em lote: finaliza TODAS as presenças online/absent sem check_out_at de um tenant,
-  // liberando a fila e permitindo novos check-ins. Regra: só finaliza se estiver stale (sem
-  // confirmação recente) OU se for explicitamente forçada (forceAll=true).
+  // Manutenção em lote: finaliza TODAS as presenças online/absent sem `attended_at` de um tenant,
+  // liberando a fila e permitindo novos check-ins. Atenção: presenças suspensas pelo Dead Man's
+  // Switch já possuem `check_out_at` preenchido, então o filtro é por status + atendimento, não
+  // por check_out_at. Se forceAll=true, finaliza mesmo presenças recentes (não somente as stale).
   async finalizeAllStalePresences(tenantId: string, forceAll: boolean = false): Promise<{ total: number; finalized: Array<{ id: string; brokerId: string; status: string; accumulatedMinutes: number }> }> {
     const stalePresences = await this.presenceRepository.find({
       where: [
-        { tenant_id: tenantId, status: 'online', check_out_at: IsNull(), attended_at: IsNull() },
-        { tenant_id: tenantId, status: 'absent', check_out_at: IsNull(), attended_at: IsNull() },
+        { tenant_id: tenantId, status: 'online', attended_at: IsNull() },
+        { tenant_id: tenantId, status: 'absent', attended_at: IsNull() },
       ],
       order: { check_in_at: 'DESC' },
     });

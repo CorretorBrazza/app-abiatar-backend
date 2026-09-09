@@ -250,6 +250,21 @@ export class DevController {
   }
 
   /**
+   * SuperAdmin: Finaliza em lote presenças online/absent pendentes de um tenant,
+   * zerando a fila e liberando novos check-ins (sem apagar registros).
+   * Body opcional: { tenantId?: string, forceAll?: boolean }
+   */
+  @Post('presences/finalize-all')
+  async finalizeAllStalePresences(
+    @Body('tenantId') tenantId?: string,
+    @Body('forceAll') forceAll?: boolean,
+    @Headers('authorization') authHeader?: string,
+  ) {
+    this.ensureDevAuthenticated(authHeader);
+    return this.devService.finalizeAllStalePresences(tenantId, forceAll === true);
+  }
+
+  /**
    * Helper de proteção para requisições do Dev Controller
    */
   private ensureDevAuthenticated(authHeader?: string): void {

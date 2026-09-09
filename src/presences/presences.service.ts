@@ -203,6 +203,56 @@ export class PresencesService {
     }
   }
 
+  // Manutenção em lote: finaliza TODAS as presenças online/absent sem check_out_at de um tenant,
+  // liberando a fila e permitindo novos check-ins. Regra: só finaliza se estiver stale (sem
+  // confirmação recente) OU se for explicitamente forçada (forceAll=true).
+  async finalizeAllStalePresences(tenantId: string, forceAll: boolean = false): Promise<{ total: number; finalized: Array<{ id: string; brokerId: string; status: string; accumulatedMinutes: number }> }> {
+    const stalePresences = await this.presenceRepository.find({
+      where: [
+        { tenant_id: tenantId, status: 'online', check_out_at: IsNull(), attended_at: IsNull() },
+        { tenant_id: tenantId, status: 'absent', check_out_at: IsNull(), attended_at: IsNull() },
+      ],
+      order: { check_in_at: 'DESC' },
+    });
+
+    const now = new Date();
+    const finalized: Array<{ id: string; brokerId: string; status: string; accumulatedMinutes: number }> = [];
+
+    for (const presence of stalePresences) {
+      const booth = presence.booth_id
+        ? await this.boothRepository.findOne({ where: { id: presence.booth_id, tenant_id: tenantId } })
+        : null;
+      const ruleSet = booth ? await this.getRuleSetForBooth(booth) : undefined;
+
+      if (!forceAll && !this.isPresenceStale(presence, ruleSet, now)) continue;
+
+      const countStart = presence.validation_starts_at || presence.check_in_at;
+      const countEnd = presence.last_confirmed_at || presence.check_in_at || countStart;
+      const diffInMs = Math.max(0, countEnd.getTime() - new Date(countStart).getTime());
+      const accumulatedMinutes = Math.max(0, Math.floor(diffInMs / 1000 / 60));
+
+      presence.accumulated_minutes = 0;
+      presence.check_out_at = now;
+      presence.status = 'invalidated';
+      const saved = await this.presenceRepository.save(presence);
+
+      const pendingPings = await this.logRepository.find({
+        where: { presence_id: presence.id, response_status: 'pending' },
+      });
+      for (const p of pendingPings) {
+        p.response_status = 'no_response';
+        p.responded_at = now;
+        await this.logRepository.save(p);
+      }
+
+      this.realtimeService.publish({ eventType: 'presence.checked_out', tenantId, aggregateId: saved.id, payload: { brokerId: saved.broker_id, boothId: saved.booth_id, status: saved.status, accumulatedMinutes: 0, reason: 'maintenance_finalize_all' } });
+      finalized.push({ id: saved.id, brokerId: saved.broker_id, status: saved.status, accumulatedMinutes: 0 });
+    }
+
+    console.log(`[MAINTENANCE] Finalizei ${finalized.length} presenças pendentes no tenant ${tenantId}.`);
+    return { total: finalized.length, finalized };
+  }
+
   // 2. Realiza o Check-in com validação por Dupla Camada (GPS ou Wi-Fi)
   async checkIn(dto: CheckInDto, brokerId: string, tenantId: string) {
 

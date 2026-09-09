@@ -1415,6 +1415,7 @@ export class UsersService implements OnModuleInit {
         roletaName: activePresence?.roleta_name || null,
         roletaEntryType: activePresence?.roleta_entry_type || null,
         roletaPosition: activePresence?.roleta_position || null,
+        checkInAt: activePresence?.check_in_at || null,
         minutesActive,
         minimumRequiredMinutes: activePresence?.minimum_period_minutes || 120,
         dataAtualizacao: new Date().toLocaleDateString('pt-BR'),

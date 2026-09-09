@@ -1338,4 +1338,20 @@ export class DevService {
       boothCheckinsToday: boothRows,
     };
   }
+
+  // Manutenção: finaliza em lote todas as presenças online/absent pendentes de um tenant,
+  // liberando a fila para novos check-ins (sem apagar registros).
+  async finalizeAllStalePresences(tenantId?: string, forceAll: boolean = false) {
+    const tenants = tenantId
+      ? [tenantId]
+      : (await this.tenantRepo.find()).map((t) => t.id);
+    const results: Array<{ tenantId: string; finalized: number }> = [];
+    let grandTotal = 0;
+    for (const tid of tenants) {
+      const result = await this.presencesService.finalizeAllStalePresences(tid, forceAll);
+      results.push({ tenantId: tid, finalized: result.total });
+      grandTotal += result.total;
+    }
+    return { total: grandTotal, byTenant: results };
+  }
 }

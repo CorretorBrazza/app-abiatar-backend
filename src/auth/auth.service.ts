@@ -11,6 +11,7 @@ import { User } from '../users/user.entity';
 import { RegisterTenantDto } from './dto/register-tenant.dto';
 import { LoginDto } from './dto/login.dto';
 import { AuditService } from '../audit/audit.service';
+import { EmailService } from '../notifications/email.service';
 
 @Injectable()
 export class AuthService {
@@ -23,6 +24,7 @@ export class AuthService {
 
     private jwtService: JwtService,
     private auditService: AuditService,
+    private emailService: EmailService,
   ) {}
 
   // 1. Cadastra uma nova Construtora (Tenant) junto com o seu primeiro Administrador
@@ -120,6 +122,56 @@ export class AuthService {
     return { message: 'Senha temporária criada. Ela expira em 30 minutos e exigirá troca no próximo acesso.', temporaryPassword, expiresAt: expires.toISOString() };
   }
 
+  // Recuperação de senha pela tela de login: gera senha temporária e envia por e-mail (Resend)
+  async forgotPassword(email: string) {
+    if (!email || !email.trim()) {
+      throw new BadRequestException('Informe seu e-mail cadastrado para recuperar a senha.');
+    }
+
+    const user = await this.userRepository.findOne({ where: { email: email.trim().toLowerCase() } });
+    if (!user) {
+      throw new BadRequestException('E-mail não cadastrado. Verifique o endereço informado.');
+    }
+    if (user.removed_at || user.status === 'inactive') {
+      throw new BadRequestException('Este usuário está inativo ou foi removido da operação. Contate a Diretoria.');
+    }
+
+    const temporaryPassword = crypto.randomBytes(9).toString('base64url').slice(0, 12);
+    user.password_hash = await bcrypt.hash(temporaryPassword, await bcrypt.genSalt(10));
+    user.must_change_password = true;
+    const expires = new Date();
+    expires.setMinutes(expires.getMinutes() + 30);
+    user.password_reset_expires_at = expires;
+    user.session_version = (user.session_version || 0) + 1;
+    await this.userRepository.save(user);
+
+    const tenant = await this.tenantRepository.findOne({ where: { id: user.tenant_id } });
+
+    const emailSent = await this.emailService.sendPasswordResetToEmail({
+      name: user.nome_guerra || user.name,
+      email: user.email,
+      temporaryPassword,
+      tenantName: tenant?.name,
+      expiresAt: expires,
+    });
+
+    void this.auditService.record({ tenantId: user.tenant_id, actorUserId: user.id, actorRole: user.role, actorEmail: user.email }, {
+      action: 'PASSWORD_FORGOT_REQUESTED',
+      entityType: 'AUTHENTICATION',
+      entityId: user.id,
+      reason: 'Recuperação de senha solicitada pela tela de login',
+      afterData: { targetEmail: user.email, expiresAt: expires.toISOString(), emailSent },
+    });
+
+    if (!emailSent) {
+      throw new BadRequestException('Não foi possível enviar o e-mail de recuperação. Tente novamente em instantes.');
+    }
+
+    return {
+      message: 'Enviamos para o seu e-mail uma senha temporária. Ela expira em 30 minutos e você deverá definir uma nova senha no primeiro acesso.',
+    };
+  }
+
   async validateActiveSession(userId: string, tenantId: string, tokenSessionVersion: number): Promise<User> {
     const user = await this.userRepository.findOne({ where: { id: userId, tenant_id: tenantId } });
     if (!user || user.removed_at || user.status === 'inactive' || (user.session_version || 0) !== (tokenSessionVersion || 0)) {
@@ -141,10 +193,10 @@ export class AuthService {
         action: 'LOGIN_FAILURE',
         entityType: 'AUTHENTICATION',
         success: false,
-        errorCode: 'INVALID_CREDENTIALS',
+        errorCode: 'EMAIL_NOT_FOUND',
         metadata: { email: dto.email },
       });
-      throw new UnauthorizedException('E-mail ou senha incorretos.');
+      throw new UnauthorizedException('E-mail não cadastrado. Verifique o endereço informado ou cadastre-se.');
     }
 
     if (user.removed_at || user.status === 'inactive') {
@@ -168,9 +220,9 @@ export class AuthService {
         entityType: 'AUTHENTICATION',
         entityId: user.id,
         success: false,
-        errorCode: 'INVALID_CREDENTIALS',
+        errorCode: 'INVALID_PASSWORD',
       });
-      throw new UnauthorizedException('E-mail ou senha incorretos.');
+      throw new UnauthorizedException('Senha incorreta. Verifique e tente novamente.');
     }
 
     const tenant = await this.tenantRepository.findOne({

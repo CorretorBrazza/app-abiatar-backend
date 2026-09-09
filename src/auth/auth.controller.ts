@@ -12,6 +12,11 @@ import { TenantId } from './decorators/tenant-id.decorator';
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
+  @Post('forgot-password')
+  async forgotPassword(@Body() body: { email: string }) {
+    return this.authService.forgotPassword(body?.email);
+  }
+
   @Post('register-tenant')
   async registerTenant(@Body() registerTenantDto: RegisterTenantDto) {
     return this.authService.registerTenant(registerTenantDto);

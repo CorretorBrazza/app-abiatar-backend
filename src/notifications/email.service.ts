@@ -272,4 +272,73 @@ export class EmailService {
       html,
     });
   }
+
+  async sendPasswordResetToEmail(params: {
+    name: string;
+    email: string;
+    temporaryPassword: string;
+    tenantName?: string;
+    expiresAt: Date;
+  }): Promise<boolean> {
+    const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="utf-8">
+      <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f4f4f5; margin: 0; padding: 24px; color: #18181b; }
+        .container { max-width: 600px; margin: 0 auto; background: #ffffff; border-radius: 12px; overflow: hidden; border: 1px solid #e4e4e7; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
+        .header { background: #b91c1c; color: #ffffff; padding: 24px; text-align: center; }
+        .header h1 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: 0.5px; }
+        .header p { margin: 6px 0 0 0; font-size: 13px; color: #fecaca; }
+        .content { padding: 28px; }
+        .password-box { background: #fef2f2; border: 2px dashed #dc2626; border-radius: 8px; padding: 20px; text-align: center; margin: 20px 0; }
+        .password-box .label { font-size: 12px; font-weight: 700; color: #991b1b; text-transform: uppercase; letter-spacing: 0.5px; }
+        .password-box .value { font-size: 28px; font-weight: 800; color: #991b1b; letter-spacing: 2px; margin-top: 8px; font-family: monospace; }
+        .notice { background: #f8fafc; border: 1px dashed #cbd5e1; border-radius: 8px; padding: 16px; margin-bottom: 24px; font-size: 14px; line-height: 20px; color: #0f172a; }
+        .notice strong { color: #b91c1c; }
+        .footer { background: #fafafa; padding: 16px 28px; font-size: 12px; color: #a1a1aa; text-align: center; border-top: 1px solid #f4f4f5; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <div class="header">
+          <h1>ABIATAR · RECUPERAÇÃO DE SENHA</h1>
+          <p>${params.tenantName || 'Sistema Imobiliário'}</p>
+        </div>
+        <div class="content">
+          <p style="font-size: 14px; line-height: 20px; margin-bottom: 12px;">
+            Olá, <strong>${params.name}</strong>! Recebemos a solicitação de redefinição da sua senha de acesso.
+          </p>
+          <p style="font-size: 14px; line-height: 20px;">Utilize a senha temporária abaixo para entrar no aplicativo:</p>
+
+          <div class="password-box">
+            <div class="label">Senha temporária</div>
+            <div class="value">${params.temporaryPassword}</div>
+          </div>
+
+          <div class="notice">
+            ⚠️ <strong>Importante:</strong> esta senha expira em <strong>30 minutos</strong> após esta solicitação
+            e você deverá definir uma nova senha no primeiro acesso. Se a solicitação não foi feita por você,
+            ignore este e-mail e a senha temporária será ignorada.
+          </div>
+
+          <p style="font-size: 13px; color: #52525b; line-height: 18px;">
+            Expiração: ${params.expiresAt.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo' })}
+          </p>
+        </div>
+        <div class="footer">
+          ABIATAR Sistema Imobiliário · Recuperação de Senha
+        </div>
+      </div>
+    </body>
+    </html>
+    `;
+
+    return this.sendEmail({
+      to: params.email,
+      subject: `[ABIATAR] Sua senha temporária de acesso`,
+      html,
+    });
+  }
 }

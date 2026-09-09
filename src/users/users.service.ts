@@ -1374,6 +1374,7 @@ export class UsersService implements OnModuleInit {
     });
 
     const queue: any[] = [];
+    const presenceByBroker = new Map<string, any>();
 
     for (const broker of brokers) {
       // B. Busca o gerente associado para exibir o nome de guerra
@@ -1390,6 +1391,8 @@ export class UsersService implements OnModuleInit {
         where: { broker_id: broker.id, tenant_id: tenantId, status: 'online' },
         relations: { booth: true },
       }) as any;
+
+      presenceByBroker.set(broker.id, activePresence || null);
 
       const isPresent = !!activePresence;
       const isOutOfCarencia = broker.status === 'active'; // Ativo = fora da carência [10]
@@ -1418,11 +1421,40 @@ export class UsersService implements OnModuleInit {
       });
     }
 
+    // E. Recalcula a posição EFEITVA da fila por roleta/plantão, desconsiderando corretores já atendidos.
+    // Assim, quando a Recepção atende o 1º, o 2º sobe automaticamente em todos os dashboards.
+    const roletaGroups = new Map<string, any[]>();
+    for (const item of queue) {
+      const key = item.roletaName ? `${item.roletaName}` : '';
+      if (!key) continue;
+      if (!roletaGroups.has(key)) roletaGroups.set(key, []);
+      roletaGroups.get(key)!.push(item);
+    }
+    const roletaEffectivePosition = new Map<string, number>();
+    for (const [key, group] of roletaGroups) {
+      group.sort((a, b) => {
+        const aPos = a.roletaPosition ?? Number.MAX_SAFE_INTEGER;
+        const bPos = b.roletaPosition ?? Number.MAX_SAFE_INTEGER;
+        if (aPos === bPos) return a.nomeGuerra.localeCompare(b.nomeGuerra);
+        return aPos - bPos;
+      });
+      let position = 1;
+      for (const item of group) {
+        const presence = presenceByBroker.get(item.brokerId);
+        if (presence?.attended_at) continue; // Já atendido: sai da posição e os demais sobem
+        roletaEffectivePosition.set(item.brokerId, position);
+        item.roletaPosition = position;
+        position++;
+      }
+    }
+
     // Ordenação da fila de leads: primeiro os habilitados por posição na roleta, depois pontualidade, depois nome
     queue.sort((a, b) => {
       if (a.isHabilitado === '🟢 HABILITADO' && b.isHabilitado !== '🟢 HABILITADO') return -1;
       if (a.isHabilitado !== '🟢 HABILITADO' && b.isHabilitado === '🟢 HABILITADO') return 1;
-      if (a.roletaPosition && b.roletaPosition) return a.roletaPosition - b.roletaPosition;
+      const aPos = a.roletaPosition ?? Number.MAX_SAFE_INTEGER;
+      const bPos = b.roletaPosition ?? Number.MAX_SAFE_INTEGER;
+      if (aPos !== bPos) return aPos - bPos;
       return a.nomeGuerra.localeCompare(b.nomeGuerra);
     });
 

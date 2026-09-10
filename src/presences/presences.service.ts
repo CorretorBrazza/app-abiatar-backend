@@ -1067,15 +1067,28 @@ export class PresencesService {
         distanceInMeters: Math.round(distanceCalculated),
       };
     } else {
-      // Se responder estando FORA da área, o corretor é suspenso por "Ausência" imediatamente [8]
+      // Se responder estando FORA da área, o período é desconsiderado automaticamente [8]
       ping.response_status = 'outside_area';
       await this.logRepository.save(ping);
 
-      ping.presence.status = 'absent';
+      const countStart = ping.presence.validation_starts_at || ping.presence.check_in_at;
+      const countEnd = ping.presence.last_confirmed_at || ping.presence.check_in_at || countStart;
+      const frozenMinutes = Math.max(0, Math.floor((Math.max(0, countEnd.getTime() - countStart.getTime())) / 1000 / 60));
+      ping.presence.accumulated_minutes = frozenMinutes;
+      ping.presence.check_out_at = countEnd;
+      ping.presence.status = frozenMinutes >= Number(ping.presence.minimum_period_minutes || 120) ? 'completed' : 'invalidated';
       await this.presenceRepository.save(ping.presence);
+      this.realtimeService.publish({ eventType: 'presence.checked_out', tenantId, aggregateId: ping.presence.id, payload: { brokerId, boothId: ping.presence.booth_id, status: ping.presence.status, accumulatedMinutes: ping.presence.accumulated_minutes, reason: 'outside_area_auto_invalidated' } });
+      void this.notificationsService.sendToUser(
+        brokerId,
+        tenantId,
+        'Presença desconsiderada',
+        `Sua confirmação foi registrada fora do raio de ${effectiveRadius}m do plantão. O período não foi contabilizado na roleta. Aproxime-se do plantão e faça um novo check-in.`,
+        { type: 'presence_invalidated', presenceId: ping.presence.id },
+      );
 
       throw new BadRequestException(
-        `Presença suspensa: você está a aproximadamente ${Math.round(distanceCalculated)}m do plantão, fora do raio de ${effectiveRadius}m permitido. Conecte-se ao Wi-Fi oficial ou solicite revalidação presencial à recepção.`,
+        `Presença desconsiderada: você está a aproximadamente ${Math.round(distanceCalculated)}m do plantão, fora do raio de ${effectiveRadius}m permitido. Aproxime-se do plantão e faça um novo check-in.`,
       );
     }
   }
@@ -1228,23 +1241,25 @@ export class PresencesService {
           pendingPing.response_status = 'no_response';
           await this.logRepository.save(pendingPing);
 
-          // Congela o tempo validado até a última confirmação: o período não confirmado não conta.
+          // DESCONSIDERA o período automaticamente: congela o tempo validado até a última
+          // confirmação (o trecho não confirmado não conta) e encerra a presença, liberando
+          // o corretor para um novo check-in SEM depender de revalidação manual da recepção.
           const countStart = presence.validation_starts_at || presence.check_in_at;
           const countEnd = presence.last_confirmed_at || presence.check_in_at || countStart;
           const frozenMinutes = Math.max(0, Math.floor((Math.max(0, countEnd.getTime() - countStart.getTime())) / 1000 / 60));
           presence.accumulated_minutes = frozenMinutes;
           presence.check_out_at = countEnd;
-          presence.status = 'absent'; // Presença suspensa [8]
+          presence.status = frozenMinutes >= Number(presence.minimum_period_minutes || 120) ? 'completed' : 'invalidated';
           await this.presenceRepository.save(presence);
-          this.realtimeService.publish({ eventType: 'presence.absent', tenantId: presence.tenant_id, aggregateId: presence.id, payload: { brokerId: presence.broker_id, boothId: presence.booth_id, reason: 'no_response' } });
+          this.realtimeService.publish({ eventType: 'presence.checked_out', tenantId: presence.tenant_id, aggregateId: presence.id, payload: { brokerId: presence.broker_id, boothId: presence.booth_id, status: presence.status, accumulatedMinutes: presence.accumulated_minutes, reason: 'no_response_auto_invalidated' } });
           brokersSuspended++;
-          console.log(`[CRON] Presença ${presence.id} suspensa por falta de resposta.`);
+          console.log(`[CRON] Presença ${presence.id} desconsiderada automaticamente por falta de resposta (${presence.status}).`);
           void this.notificationsService.sendToUser(
             presence.broker_id,
             presence.tenant_id,
-            'Presença suspensa',
-            'Não recebemos sua confirmação de presença. O turno foi colocado em pausa.',
-            { type: 'presence_suspended', presenceId: presence.id },
+            'Presença desconsiderada',
+            'Não recebemos sua confirmação de presença dentro do prazo. O período não confirmado não foi contabilizado na roleta. Faça um novo check-in para reiniciar o turno.',
+            { type: 'presence_invalidated', presenceId: presence.id },
           );
         }
       } else {

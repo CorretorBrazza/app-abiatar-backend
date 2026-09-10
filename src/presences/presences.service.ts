@@ -409,7 +409,10 @@ export class PresencesService {
       assignedEntryType = 'pos_barra';
       assignedValidationStartsAt = roletaAnchor; // Mesma âncora do pontual: início sempre no horário cheio da roleta
       
-      // Pós-Barra entra automaticamente no final da fila
+      // Pós-Barra entra automaticamente no final da fila.
+      // IMPORTANTE: conta também os pontuais sem posição (ainda aguardando sorteio) para
+      // garantir que o pós-barra fique SEMPRE depois de todos os pontuais, mesmo que o
+      // processRoletaDraws() ainda não tenha executado para esta roleta.
       const existingInBooth = await this.presenceRepository.find({
         where: {
           booth_id: dto.boothId,
@@ -418,8 +421,11 @@ export class PresencesService {
           roleta_name: assignedRoletaName,
         },
       });
-      const maxPos = existingInBooth.reduce((max, p) => Math.max(max, p.roleta_position || 0), 0);
-      assignedPosition = maxPos + 1;
+      const positionedCount = existingInBooth.filter((p) => p.roleta_position !== null).length;
+      const unplacedPontualCount = existingInBooth.filter(
+        (p) => p.roleta_position === null && p.roleta_entry_type === 'pontual',
+      ).length;
+      assignedPosition = positionedCount + unplacedPontualCount + 1;
     }
 
     const presence = this.presenceRepository.create({
@@ -1584,8 +1590,11 @@ export class PresencesService {
       const existingInBooth = await this.presenceRepository.find({
         where: { booth_id: booth.id, tenant_id: tenantId, status: 'online', roleta_name: roletaName },
       });
-      const maxPos = existingInBooth.reduce((max, p) => Math.max(max, p.roleta_position || 0), 0);
-      assignedPosition = maxPos + 1;
+      const positionedCount = existingInBooth.filter((p) => p.roleta_position !== null).length;
+      const unplacedPontualCount = existingInBooth.filter(
+        (p) => p.roleta_position === null && p.roleta_entry_type === 'pontual',
+      ).length;
+      assignedPosition = positionedCount + unplacedPontualCount + 1;
     }
 
     const presence = this.presenceRepository.create({
@@ -1880,6 +1889,12 @@ export class PresencesService {
       order: { roleta_position: 'ASC', check_in_at: 'ASC' },
     });
 
+    const absentPresences = await this.presenceRepository.find({
+      where: { tenant_id: tenantId, status: 'absent' },
+      relations: { broker: true, booth: true },
+      order: { check_in_at: 'ASC', created_at: 'DESC' },
+    });
+
     const now = new Date();
     const tzNow = getNowInTimezone('America/Sao_Paulo');
     const todayStart = getDateAtTimeInTimezone(tzNow.dateStr, '00:00');
@@ -1899,10 +1914,18 @@ export class PresencesService {
       presencesByBooth.set(p.booth_id, list);
     }
 
+    const absentByBooth = new Map<string, typeof absentPresences>();
+    for (const p of absentPresences) {
+      const list = absentByBooth.get(p.booth_id) || [];
+      list.push(p);
+      absentByBooth.set(p.booth_id, list);
+    }
+
     const boothsReport = await Promise.all(
       booths.map(async (booth) => {
         const ruleSet = await this.getRuleSetForBooth(booth);
         const onlineInBooth = presencesByBooth.get(booth.id) || [];
+        const absentInBooth = absentByBooth.get(booth.id) || [];
         const minRequired = ruleSet.minimum_brokers_required ?? 2;
         const isUnderstaffed = onlineInBooth.length < minRequired;
 
@@ -1926,15 +1949,38 @@ export class PresencesService {
           };
         });
 
+        const absentBrokers = absentInBooth.map((p) => {
+          const countStart = p.validation_starts_at || p.check_in_at;
+          const minutesActive = Math.max(0, Math.floor((now.getTime() - countStart.getTime()) / 1000 / 60));
+          return {
+            presenceId: p.id,
+            brokerId: p.broker_id,
+            nomeGuerra: p.broker?.nome_guerra || 'Corretor',
+            name: p.broker?.name || 'Corretor',
+            brokerStage: p.broker?.broker_stage || 'corretor_creci',
+            creci: p.broker?.creci || null,
+            roletaPosition: p.roleta_position,
+            roletaName: p.roleta_name,
+            roletaEntryType: p.roleta_entry_type,
+            checkInAt: p.check_in_at,
+            minutesActive,
+            hoursFormatted: `${Math.floor(minutesActive / 60)}h ${minutesActive % 60}m`,
+            suspendedAt: p.check_out_at || null,
+            lastConfirmedAt: p.last_confirmed_at,
+          };
+        });
+
         return {
           boothId: booth.id,
           boothName: booth.name,
           address: booth.address,
           onlineCount: onlineInBooth.length,
+          absentCount: absentInBooth.length,
           minRequired,
           isUnderstaffed,
           hasBrokers: onlineInBooth.length > 0,
           onlineBrokers,
+          absentBrokers,
         };
       }),
     );
@@ -1951,6 +1997,7 @@ export class PresencesService {
       emptyBoothsCount,
       understaffedBoothsCount,
       onlineBrokersCount: activePresences.length,
+      absentBrokersCount: absentPresences.length,
       todayCheckinsCount: todayPresences.length,
       todayTotalHoursFormatted: `${Math.floor(totalTodayMinutes / 60)}h ${totalTodayMinutes % 60}m`,
       booths: boothsReport,

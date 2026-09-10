@@ -1386,15 +1386,20 @@ export class UsersService implements OnModuleInit {
         }
       }
 
-      // C. Busca a presença ativa ("online") deste corretor
+      // C. Busca a presença ativa ("online") ou suspensa ("absent") deste corretor
       const activePresence = await this.userRepository.manager.getRepository('presences').findOne({
-        where: { broker_id: broker.id, tenant_id: tenantId, status: 'online' },
+        where: [
+          { broker_id: broker.id, tenant_id: tenantId, status: 'online' },
+          { broker_id: broker.id, tenant_id: tenantId, status: 'absent' },
+        ],
         relations: { booth: true },
+        order: { check_in_at: 'DESC' },
       }) as any;
 
       presenceByBroker.set(broker.id, activePresence || null);
 
-      const isPresent = !!activePresence;
+      const isPresent = activePresence?.status === 'online';
+      const isSuspended = activePresence?.status === 'absent';
       const isOutOfCarencia = broker.status === 'active'; // Ativo = fora da carência [10]
 
       // D. REGRA DE OURO: Habilitado se presente + fora de carência + leads não pausados + não removido
@@ -1408,7 +1413,9 @@ export class UsersService implements OnModuleInit {
         brokerId: broker.id,
         nomeGuerra: broker.nome_guerra,
         managerName: managerName,
-        statusPresenca: isPresent ? `🟢 ONLINE (${activePresence.booth?.name || 'Plantão'})` : '🔴 OFFLINE',
+        statusPresenca: isSuspended
+          ? `🟠 SUSPENSO (${activePresence.booth?.name || 'Plantão'})`
+          : (isPresent ? `🟢 ONLINE (${activePresence.booth?.name || 'Plantão'})` : '🔴 OFFLINE'),
         statusCarencia: broker.removed_at ? '⚫ REMOVIDO' : (broker.status === 'grace_period' ? '🟡 EM CARÊNCIA' : (isOutOfCarencia ? '🟢 ATIVO' : '🔴 INATIVO')),
         leadsPaused: broker.leads_paused,
         isHabilitado: isHabilitado ? '🟢 HABILITADO' : '🔴 BLOQUEADO',
@@ -1416,6 +1423,8 @@ export class UsersService implements OnModuleInit {
         roletaEntryType: activePresence?.roleta_entry_type || null,
         roletaPosition: activePresence?.roleta_position || null,
         checkInAt: activePresence?.check_in_at || null,
+        statusPresence: activePresence?.status || null,
+        suspendedAt: activePresence?.check_out_at || null,
         minutesActive,
         minimumRequiredMinutes: activePresence?.minimum_period_minutes || 120,
         dataAtualizacao: new Date().toLocaleDateString('pt-BR'),

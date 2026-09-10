@@ -134,17 +134,13 @@ export class PresencesService {
     return distance;
   }
 
-  private getNextAlignedConfirmationAt(from: Date): Date {
-    const next = new Date(from);
-    const minute = next.getMinutes();
-    if (minute < 25) next.setMinutes(25, 0, 0);
-    else if (minute < 50) next.setMinutes(50, 0, 0);
-    else { next.setHours(next.getHours() + 1); next.setMinutes(0, 0, 0); }
-    return next;
+  private getNextConfirmationAt(from: Date, intervalMinutes: number): Date {
+    const interval = Math.max(1, Number(intervalMinutes) || 30);
+    return new Date(from.getTime() + interval * 60 * 1000);
   }
 
   private getConfirmationToleranceMinutes(ruleSet: BoothRuleSet): number {
-    return Math.max(0, Math.min(5, Number(ruleSet.ping_response_deadline_minutes ?? 5)));
+    return Math.max(1, Number(ruleSet.ping_response_deadline_minutes ?? 5));
   }
 
   // Determina se uma presença está abandonada (zumbi): sem qualquer confirmação recente.
@@ -442,7 +438,7 @@ export class PresencesService {
       validation_starts_at: assignedValidationStartsAt,
       check_in_at: now,
       last_confirmed_at: now,
-      next_confirmation_at: this.getNextAlignedConfirmationAt(now),
+      next_confirmation_at: this.getNextConfirmationAt(now, ruleSet.ping_interval_minutes),
       status: 'online',
     });
 
@@ -590,7 +586,7 @@ export class PresencesService {
       closing_time: null,
       checkin_tolerance_minutes: 0,
       checkout_tolerance_minutes: 0,
-      ping_interval_minutes: 25,
+      ping_interval_minutes: 30,
       ping_response_deadline_minutes: 5,
       minimum_brokers_required: booth.min_brokers_required,
       gps_radius_meters: booth.gps_radius,
@@ -988,6 +984,7 @@ export class PresencesService {
     }
 
     const booth = ping.presence.booth;
+    const ruleSet = await this.getRuleSetForBooth(booth);
     let isPresenceValid = false;
     let methodUsed = '';
     let distanceCalculated = 0;
@@ -1030,7 +1027,6 @@ export class PresencesService {
         throw new BadRequestException('Plantão de vendas sem coordenadas geográficas (GPS) cadastradas. Contate a Recepção.');
       }
 
-      const ruleSet = await this.getRuleSetForBooth(booth);
       effectiveRadius = ruleSet?.gps_radius_meters || booth.gps_radius || 200;
 
       distanceCalculated = this.calculateDistanceInMeters(
@@ -1057,7 +1053,7 @@ export class PresencesService {
 
       ping.presence.status = 'online';
       ping.presence.last_confirmed_at = new Date();
-      ping.presence.next_confirmation_at = this.getNextAlignedConfirmationAt(new Date());
+      ping.presence.next_confirmation_at = this.getNextConfirmationAt(new Date(), ruleSet.ping_interval_minutes);
       await this.presenceRepository.save(ping.presence);
       this.realtimeService.publish({ eventType: 'presence.confirmed', tenantId, aggregateId: ping.presence.id, payload: { brokerId, boothId: ping.presence.booth_id, method: methodUsed, nextConfirmationAt: ping.presence.next_confirmation_at } });
 
@@ -1223,7 +1219,7 @@ export class PresencesService {
       });
       if (!booth) continue;
       const ruleSet = await this.getRuleSetForBooth(booth);
-      const pingIntervalMinutes = 25;
+      const pingIntervalMinutes = Number(ruleSet?.ping_interval_minutes ?? 30);
       const responseDeadlineMinutes = this.getConfirmationToleranceMinutes(ruleSet);
 
       // Busca se já existe um ping "pendente" lançado anteriormente para essa presença
@@ -1233,7 +1229,7 @@ export class PresencesService {
       });
 
       if (pendingPing) {
-        // O prazo é configurável por plantão; o padrão é 30 minutos.
+        // O prazo é o configurado no plantão (ping_response_deadline_minutes: padrão 5 min).
         const diffInMs = now.getTime() - pendingPing.sent_at.getTime();
         const minutesElapsed = Math.floor(diffInMs / 1000 / 60);
 
@@ -1267,7 +1263,7 @@ export class PresencesService {
           where: { presence_id: presence.id },
           order: { sent_at: 'DESC' },
         });
-        const scheduledAt = presence.next_confirmation_at || (lastPing ? this.getNextAlignedConfirmationAt(lastPing.sent_at) : this.getNextAlignedConfirmationAt(presence.check_in_at));
+        const scheduledAt = presence.next_confirmation_at || (lastPing ? this.getNextConfirmationAt(lastPing.sent_at, pingIntervalMinutes) : this.getNextConfirmationAt(presence.check_in_at, pingIntervalMinutes));
         if (now.getTime() < scheduledAt.getTime()) continue;
 
         // Sem ping pendente e após o próximo marco alinhado, dispara nova confirmação.
@@ -1626,7 +1622,7 @@ export class PresencesService {
       validation_starts_at: roletaAnchor,
       check_in_at: now,
       last_confirmed_at: now,
-      next_confirmation_at: this.getNextAlignedConfirmationAt(now),
+      next_confirmation_at: this.getNextConfirmationAt(now, ruleSet.ping_interval_minutes),
       status: 'online',
     });
 
@@ -1699,9 +1695,11 @@ export class PresencesService {
     }
 
     const now = new Date();
+    const booth = await this.boothRepository.findOne({ where: { id: presence.booth_id, tenant_id: tenantId } });
+    const ruleSet = booth ? await this.getRuleSetForBooth(booth) : undefined;
     presence.status = 'online';
     presence.last_confirmed_at = now;
-    presence.next_confirmation_at = this.getNextAlignedConfirmationAt(now);
+    presence.next_confirmation_at = this.getNextConfirmationAt(now, Number(ruleSet?.ping_interval_minutes ?? 30));
     await this.presenceRepository.save(presence);
 
     this.realtimeService.publish({
@@ -1898,22 +1896,26 @@ export class PresencesService {
       order: { name: 'ASC' },
     });
 
+    const now = new Date();
+    const tzNow = getNowInTimezone('America/Sao_Paulo');
+    const todayStart = getDateAtTimeInTimezone(tzNow.dateStr, '00:00');
+    const todayEnd = new Date(todayStart.getTime() + 24 * 60 * 60 * 1000 - 1);
+
     const activePresences = await this.presenceRepository.find({
       where: { tenant_id: tenantId, status: 'online' },
       relations: { broker: true, booth: true },
       order: { roleta_position: 'ASC', check_in_at: 'ASC' },
     });
 
-    const absentPresences = await this.presenceRepository.find({
-      where: { tenant_id: tenantId, status: 'absent' },
+    const invalidatedPresences = await this.presenceRepository.find({
+      where: {
+        tenant_id: tenantId,
+        status: 'invalidated',
+        check_out_at: Between(todayStart, todayEnd),
+      },
       relations: { broker: true, booth: true },
-      order: { check_in_at: 'ASC', created_at: 'DESC' },
+      order: { check_out_at: 'ASC', created_at: 'DESC' },
     });
-
-    const now = new Date();
-    const tzNow = getNowInTimezone('America/Sao_Paulo');
-    const todayStart = getDateAtTimeInTimezone(tzNow.dateStr, '00:00');
-    const todayEnd = new Date(todayStart.getTime() + 24 * 60 * 60 * 1000 - 1);
 
     const todayPresences = await this.presenceRepository.find({
       where: {
@@ -1929,18 +1931,18 @@ export class PresencesService {
       presencesByBooth.set(p.booth_id, list);
     }
 
-    const absentByBooth = new Map<string, typeof absentPresences>();
-    for (const p of absentPresences) {
-      const list = absentByBooth.get(p.booth_id) || [];
+    const invalidatedByBooth = new Map<string, typeof invalidatedPresences>();
+    for (const p of invalidatedPresences) {
+      const list = invalidatedByBooth.get(p.booth_id) || [];
       list.push(p);
-      absentByBooth.set(p.booth_id, list);
+      invalidatedByBooth.set(p.booth_id, list);
     }
 
     const boothsReport = await Promise.all(
       booths.map(async (booth) => {
         const ruleSet = await this.getRuleSetForBooth(booth);
         const onlineInBooth = presencesByBooth.get(booth.id) || [];
-        const absentInBooth = absentByBooth.get(booth.id) || [];
+        const invalidatedInBooth = invalidatedByBooth.get(booth.id) || [];
         const minRequired = ruleSet.minimum_brokers_required ?? 2;
         const isUnderstaffed = onlineInBooth.length < minRequired;
 
@@ -1964,9 +1966,8 @@ export class PresencesService {
           };
         });
 
-        const absentBrokers = absentInBooth.map((p) => {
-          const countStart = p.validation_starts_at || p.check_in_at;
-          const minutesActive = Math.max(0, Math.floor((now.getTime() - countStart.getTime()) / 1000 / 60));
+        const invalidatedBrokers = invalidatedInBooth.map((p) => {
+          const accumulated = p.accumulated_minutes || 0;
           return {
             presenceId: p.id,
             brokerId: p.broker_id,
@@ -1978,9 +1979,9 @@ export class PresencesService {
             roletaName: p.roleta_name,
             roletaEntryType: p.roleta_entry_type,
             checkInAt: p.check_in_at,
-            minutesActive,
-            hoursFormatted: `${Math.floor(minutesActive / 60)}h ${minutesActive % 60}m`,
-            suspendedAt: p.check_out_at || null,
+            invalidatedAt: p.check_out_at || null,
+            minutesActive: accumulated,
+            hoursFormatted: `${Math.floor(accumulated / 60)}h ${accumulated % 60}m`,
             lastConfirmedAt: p.last_confirmed_at,
           };
         });
@@ -1990,12 +1991,12 @@ export class PresencesService {
           boothName: booth.name,
           address: booth.address,
           onlineCount: onlineInBooth.length,
-          absentCount: absentInBooth.length,
+          invalidatedCount: invalidatedInBooth.length,
           minRequired,
           isUnderstaffed,
           hasBrokers: onlineInBooth.length > 0,
           onlineBrokers,
-          absentBrokers,
+          invalidatedBrokers,
         };
       }),
     );
@@ -2003,7 +2004,11 @@ export class PresencesService {
     const activeBoothsCount = boothsReport.filter((b) => b.hasBrokers).length;
     const emptyBoothsCount = boothsReport.filter((b) => !b.hasBrokers).length;
     const understaffedBoothsCount = boothsReport.filter((b) => b.isUnderstaffed).length;
-    const totalTodayMinutes = todayPresences.reduce((acc, p) => acc + this.getEffectiveMinutes(p, now), 0);
+    const countableTodayPresences = todayPresences.filter((p) => p.status !== 'invalidated');
+    const totalTodayMinutes = countableTodayPresences.reduce(
+      (acc, p) => acc + this.getEffectiveMinutes(p, now),
+      0,
+    );
 
     return {
       updatedAt: now.toISOString(),
@@ -2012,7 +2017,7 @@ export class PresencesService {
       emptyBoothsCount,
       understaffedBoothsCount,
       onlineBrokersCount: activePresences.length,
-      absentBrokersCount: absentPresences.length,
+      invalidatedBrokersCount: invalidatedPresences.length,
       todayCheckinsCount: todayPresences.length,
       todayTotalHoursFormatted: `${Math.floor(totalTodayMinutes / 60)}h ${totalTodayMinutes % 60}m`,
       booths: boothsReport,
@@ -2028,22 +2033,25 @@ export class PresencesService {
     managerId?: string,
   ) {
     const now = new Date();
-    let startDate: Date;
-    let endDate: Date;
-
-    if (startDateStr) {
-      const [y, m, d] = startDateStr.split('-').map(Number);
-      startDate = new Date(y, m - 1, d, 0, 0, 0, 0);
-    } else {
-      startDate = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
-    }
-
-    if (endDateStr) {
-      const [y, m, d] = endDateStr.split('-').map(Number);
-      endDate = new Date(y, m - 1, d, 23, 59, 59, 999);
-    } else {
-      endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
-    }
+    const tzNow = getNowInTimezone('America/Sao_Paulo');
+    const [curYear, curMonth] = tzNow.dateStr.split('-').map(Number);
+    const startDate = startDateStr
+      ? getDateAtTimeInTimezone(startDateStr, '00:00')
+      : getDateAtTimeInTimezone(
+          `${curYear}-${String(curMonth).padStart(2, '0')}-01`,
+          '00:00',
+        );
+    const endDate = endDateStr
+      ? new Date(
+          getDateAtTimeInTimezone(endDateStr, '00:00').getTime() +
+            24 * 60 * 60 * 1000 -
+            1,
+        )
+      : new Date(
+          getDateAtTimeInTimezone(tzNow.dateStr, '00:00').getTime() +
+            24 * 60 * 60 * 1000 -
+            1,
+        );
 
     const userRepo = this.presenceRepository.manager.getRepository(User);
     const whereBrokers: any = {
@@ -2101,7 +2109,9 @@ export class PresencesService {
         const onlineCount = brokerPresences.filter((p) => p.status === 'online').length;
         const pontualCount = brokerPresences.filter((p) => p.roleta_entry_type === 'pontual').length;
         const posBarraCount = brokerPresences.filter((p) => p.roleta_entry_type === 'pos_barra').length;
-        const totalMinutes = brokerPresences.reduce((acc, p) => acc + this.getEffectiveMinutes(p, now), 0);
+        const totalMinutes = brokerPresences
+          .filter((p) => p.status !== 'invalidated')
+          .reduce((acc, p) => acc + this.getEffectiveMinutes(p, now), 0);
         const hours = Math.floor(totalMinutes / 60);
         const minutes = totalMinutes % 60;
 
@@ -2181,22 +2191,25 @@ export class PresencesService {
     endDateStr?: string,
   ) {
     const now = new Date();
-    let startDate: Date;
-    let endDate: Date;
-
-    if (startDateStr) {
-      const [y, m, d] = startDateStr.split('-').map(Number);
-      startDate = new Date(y, m - 1, d, 0, 0, 0, 0);
-    } else {
-      startDate = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
-    }
-
-    if (endDateStr) {
-      const [y, m, d] = endDateStr.split('-').map(Number);
-      endDate = new Date(y, m - 1, d, 23, 59, 59, 999);
-    } else {
-      endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
-    }
+    const tzNow = getNowInTimezone('America/Sao_Paulo');
+    const [curYear, curMonth] = tzNow.dateStr.split('-').map(Number);
+    const startDate = startDateStr
+      ? getDateAtTimeInTimezone(startDateStr, '00:00')
+      : getDateAtTimeInTimezone(
+          `${curYear}-${String(curMonth).padStart(2, '0')}-01`,
+          '00:00',
+        );
+    const endDate = endDateStr
+      ? new Date(
+          getDateAtTimeInTimezone(endDateStr, '00:00').getTime() +
+            24 * 60 * 60 * 1000 -
+            1,
+        )
+      : new Date(
+          getDateAtTimeInTimezone(tzNow.dateStr, '00:00').getTime() +
+            24 * 60 * 60 * 1000 -
+            1,
+        );
 
     const userRepo = this.presenceRepository.manager.getRepository(User);
     const managers = await userRepo.find({
@@ -2242,7 +2255,9 @@ export class PresencesService {
           team.map(async (b) => {
             const bPresences = presencesByBroker.get(b.id) || [];
             const checkIns = bPresences.length;
-            const minutes = bPresences.reduce((acc, p) => acc + this.getEffectiveMinutes(p, now), 0);
+            const minutes = bPresences
+              .filter((p) => p.status !== 'invalidated')
+              .reduce((acc, p) => acc + this.getEffectiveMinutes(p, now), 0);
             teamTotalCheckIns += checkIns;
             teamTotalMinutes += minutes;
 
@@ -2307,22 +2322,25 @@ export class PresencesService {
     endDateStr?: string,
   ) {
     const now = new Date();
-    let startDate: Date;
-    let endDate: Date;
-
-    if (startDateStr) {
-      const [y, m, d] = startDateStr.split('-').map(Number);
-      startDate = new Date(y, m - 1, d, 0, 0, 0, 0);
-    } else {
-      startDate = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
-    }
-
-    if (endDateStr) {
-      const [y, m, d] = endDateStr.split('-').map(Number);
-      endDate = new Date(y, m - 1, d, 23, 59, 59, 999);
-    } else {
-      endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
-    }
+    const tzNow = getNowInTimezone('America/Sao_Paulo');
+    const [curYear, curMonth] = tzNow.dateStr.split('-').map(Number);
+    const startDate = startDateStr
+      ? getDateAtTimeInTimezone(startDateStr, '00:00')
+      : getDateAtTimeInTimezone(
+          `${curYear}-${String(curMonth).padStart(2, '0')}-01`,
+          '00:00',
+        );
+    const endDate = endDateStr
+      ? new Date(
+          getDateAtTimeInTimezone(endDateStr, '00:00').getTime() +
+            24 * 60 * 60 * 1000 -
+            1,
+        )
+      : new Date(
+          getDateAtTimeInTimezone(tzNow.dateStr, '00:00').getTime() +
+            24 * 60 * 60 * 1000 -
+            1,
+        );
 
     const booths = await this.boothRepository.find({
       where: { tenant_id: tenantId, lifecycle_status: 'published' },
@@ -2347,7 +2365,9 @@ export class PresencesService {
       const bPresences = presencesByBooth.get(booth.id) || [];
       const totalCheckIns = bPresences.length;
       const uniqueBrokers = new Set(bPresences.map((p) => p.broker_id)).size;
-      const totalMinutes = bPresences.reduce((acc, p) => acc + this.getEffectiveMinutes(p, now), 0);
+      const totalMinutes = bPresences
+        .filter((p) => p.status !== 'invalidated')
+        .reduce((acc, p) => acc + this.getEffectiveMinutes(p, now), 0);
       const hours = Math.floor(totalMinutes / 60);
       const minutes = totalMinutes % 60;
 

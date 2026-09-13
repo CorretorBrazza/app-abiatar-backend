@@ -1485,9 +1485,11 @@ export class PresencesService {
       throw new ForbiddenException('Você só pode consultar o seu próprio histórico.');
     }
 
+    const isReceptionSelf = actor.role === 'recepcao_level_3' && actor.sub === brokerId;
+
     const broker = await this.userRepository.findOne({ where: { id: brokerId, tenant_id: tenantId } });
-    if (!broker || broker.removed_at) throw new NotFoundException('Corretor não localizado no sistema.');
-    if (broker.role !== 'corretor_level_3') {
+    if (!broker || broker.removed_at) throw new NotFoundException('Usuário não localizado no sistema.');
+    if (!isReceptionSelf && broker.role !== 'corretor_level_3') {
       throw new BadRequestException('O histórico de presença é exclusivo para corretores.');
     }
 
@@ -1515,7 +1517,7 @@ export class PresencesService {
     }
 
     const query = this.presenceRepository.createQueryBuilder('p')
-      .where('p.broker_id = :brokerId', { brokerId })
+      .where(isReceptionSelf ? 'p.attended_by_user_id = :brokerId' : 'p.broker_id = :brokerId', { brokerId })
       .andWhere('p.tenant_id = :tenantId', { tenantId })
       .andWhere('p.check_in_at BETWEEN :start AND :end', { start: startDate, end: endDate })
       .orderBy('p.check_in_at', 'ASC');

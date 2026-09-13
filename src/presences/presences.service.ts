@@ -8,6 +8,7 @@ import { User } from '../users/user.entity';
 import { Booth } from '../booths/entities/booth.entity';
 import { BoothReceptionist } from '../booths/entities/booth-receptionist.entity';
 import { BoothRuleSet } from '../booths/entities/booth-rule-set.entity';
+import { ALL_BROKER_STAGES } from '../booths/dto/update-booth-rules.dto';
 import { BoothHoliday } from '../booths/entities/booth-holiday.entity';
 import { BoothSpecialSchedule } from '../booths/entities/booth-special-schedule.entity';
 import { DeadManLog } from './entities/dead-man-log.entity';
@@ -298,6 +299,15 @@ export class PresencesService {
     }
 
     const ruleSet = await this.getRuleSetForBooth(booth);
+
+    // A2. Trava de estágio permitido nas regras vigentes do plantão
+    const allowedStages: string[] = (ruleSet as any).allowed_broker_stages ?? ALL_BROKER_STAGES;
+    if (!Array.isArray(allowedStages) || allowedStages.length === 0) {
+      throw new BadRequestException(`Check-in bloqueado. O plantão '${booth.name}' não está liberado para nenhum estágio neste momento. Contate a Diretoria.`);
+    }
+    if (!allowedStages.includes(brokerUser.broker_stage || 'corretor_creci')) {
+      throw new BadRequestException(`Check-in bloqueado. Este plantão não está liberado para corretores em fase '${brokerUser.broker_stage || 'treinamento'}'. Fases liberadas: ${allowedStages.join(', ')}.`);
+    }
 
     // C. Validação de Proximidade (DUPLA CAMADA: Wi-Fi do Plantão ou GPS) [7]
     let isLocationValid = false;
@@ -592,6 +602,7 @@ export class PresencesService {
       gps_radius_meters: booth.gps_radius,
       weekend_enabled: true,
       minimum_monthly_periods: 20,
+      allowed_broker_stages: ALL_BROKER_STAGES,
       created_by: null,
     });
   }
@@ -1544,6 +1555,15 @@ export class PresencesService {
 
     // Respeita fielmente a janela da roleta do momento (mesma lógica do check-in normal)
     const { ruleSet, matchingRoleta, roletaTimes, earlyMinutes, posBarraMinutes } = await this.resolveRoletaForBooth(booth);
+
+    // Trava de estágio permitido nas regras vigentes do plantão
+    const allowedStages: string[] = (ruleSet as any).allowed_broker_stages ?? ALL_BROKER_STAGES;
+    if (!Array.isArray(allowedStages) || allowedStages.length === 0) {
+      throw new BadRequestException(`Check-in bloqueado. O plantão '${booth.name}' não está liberado para nenhum estágio neste momento. Contate a Diretoria.`);
+    }
+    if (!allowedStages.includes(broker.broker_stage || 'corretor_creci')) {
+      throw new BadRequestException(`Check-in bloqueado. O plantão '${booth.name}' não está liberado para corretores em fase '${broker.broker_stage || 'treinamento'}'. Fases liberadas: ${allowedStages.join(', ')}.`);
+    }
 
     // Fora da janela de check-in/pós-barra ainda pode haver corretores online aguardando
     // atendimento. Permite o check-in manual ao final da fila da roleta mais frequente dessas

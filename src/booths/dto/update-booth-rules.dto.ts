@@ -1,6 +1,9 @@
-import { IsArray, IsBoolean, IsInt, IsOptional, IsString, Max, Min, ValidateNested } from 'class-validator';
+import { IsArray, IsBoolean, IsIn, IsInt, IsOptional, IsString, Max, Min, ValidateNested } from 'class-validator';
 import { Type } from 'class-transformer';
 import { BoothPeriodDto } from './booth-period.dto';
+
+export const ALL_BROKER_STAGES: ('treinamento' | 'estagiario' | 'corretor_creci')[] = ['treinamento', 'estagiario', 'corretor_creci'];
+export type AllowedBrokerStage = (typeof ALL_BROKER_STAGES)[number];
 
 export class UpdateBoothRulesDto {
   @IsInt() @Min(1) @Max(1440) @IsOptional()
@@ -68,6 +71,11 @@ export class UpdateBoothRulesDto {
   @Type(() => BoothPeriodDto)
   @IsOptional()
   periods?: BoothPeriodDto[];
+
+  @IsArray()
+  @IsIn(ALL_BROKER_STAGES, { each: true })
+  @IsOptional()
+  allowedBrokerStages?: AllowedBrokerStage[];
 
   @IsString() @IsOptional()
   reason?: string;

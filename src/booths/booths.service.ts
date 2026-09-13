@@ -11,7 +11,7 @@ import { UpdateBoothDto } from './dto/update-booth.dto';
 import { BoothRuleSet } from './entities/booth-rule-set.entity';
 import { BoothHoliday } from './entities/booth-holiday.entity';
 import { BoothSpecialSchedule } from './entities/booth-special-schedule.entity';
-import { UpdateBoothRulesDto } from './dto/update-booth-rules.dto';
+import { UpdateBoothRulesDto, ALL_BROKER_STAGES } from './dto/update-booth-rules.dto';
 import { CreateBoothHolidayDto } from './dto/create-booth-holiday.dto';
 import { CreateSpecialScheduleDto } from './dto/create-special-schedule.dto';
 import { AuditService } from '../audit/audit.service';
@@ -467,7 +467,7 @@ async isHoliday(boothId: string, tenantId: string, targetDate: Date = new Date()
   }
 
   // 2. Retorna todos os plantões cadastrados daquela construtora específica [7]
-  async findAll(tenantId: string, role?: string): Promise<Booth[]> {
+  async findAll(tenantId: string, role?: string, actorSub?: string): Promise<Booth[]> {
     const booths = await this.boothRepository.find({
       where: { tenant_id: tenantId },
       relations: { wifis: true },
@@ -476,7 +476,25 @@ async isHoliday(boothId: string, tenantId: string, targetDate: Date = new Date()
     const visibleBooths = role === 'diretoria_level_1' || role === 'platform_admin_level_0'
       ? booths
       : booths.filter((booth) => booth.lifecycle_status === 'published');
-    return Promise.all(visibleBooths.map((booth) => this.applyActiveRules(booth)));
+
+    let brokerStage: string | null = null;
+    if (role === 'corretor_level_3' && actorSub) {
+      const user = await this.userRepository.findOne({ where: { id: actorSub, tenant_id: tenantId } });
+      brokerStage = user?.broker_stage || 'corretor_creci';
+    }
+
+    const staged = await Promise.all(visibleBooths.map((booth) => this.applyActiveRules(booth)));
+
+    if (brokerStage) {
+      // Corretor só enxerga plantões cujo estágio está liberado nas regras vigentes
+      return staged.filter((booth) => {
+        const rules = (booth as any).active_rule_set;
+        const allowed: string[] = rules?.allowed_broker_stages ?? ALL_BROKER_STAGES;
+        if (!Array.isArray(allowed) || allowed.length === 0) return false;
+        return allowed.includes(brokerStage as string);
+      });
+    }
+    return staged;
   }
 
   async updateBooth(boothId: string, tenantId: string, actor: { id: string; role: string; email?: string }, dto: UpdateBoothDto): Promise<Booth> {
@@ -567,6 +585,7 @@ async isHoliday(boothId: string, tenantId: string, targetDate: Date = new Date()
       const baseGpsRadius = Number(booth.gps_radius);
       const baseMinimumBrokers = Number(booth.min_brokers_required);
       const rules = await this.getActiveRuleSet(booth.id, booth.tenant_id);
+      (booth as any).active_rule_set = rules;
       booth.base_gps_radius = baseGpsRadius;
       booth.base_min_brokers_required = baseMinimumBrokers;
       booth.effective_gps_radius = Number(rules.gps_radius_meters);
@@ -691,6 +710,7 @@ async isHoliday(boothId: string, tenantId: string, targetDate: Date = new Date()
         version: 1,
         minimum_brokers_required: booth.min_brokers_required,
         gps_radius_meters: booth.gps_radius,
+        allowed_broker_stages: ALL_BROKER_STAGES,
       }));
     } catch (error) {
       console.error('[BOOTH_RULES] Tabela de regras indisponível; retornando fallback não persistido:', error instanceof Error ? error.message : String(error));
@@ -721,6 +741,7 @@ async isHoliday(boothId: string, tenantId: string, targetDate: Date = new Date()
         weekend_enabled: true,
         minimum_monthly_periods: 20,
         periods: [],
+        allowed_broker_stages: ALL_BROKER_STAGES,
         created_by: null,
       } as unknown as BoothRuleSet;
     }
@@ -764,6 +785,7 @@ async isHoliday(boothId: string, tenantId: string, targetDate: Date = new Date()
       weekend_enabled: dto.weekendEnabled ?? current.weekend_enabled,
       minimum_monthly_periods: dto.minimumMonthlyPeriods ?? current.minimum_monthly_periods,
       periods: dto.periods ?? current.periods ?? [],
+      allowed_broker_stages: dto.allowedBrokerStages ?? current.allowed_broker_stages ?? ALL_BROKER_STAGES,
     });
     await this.ruleSetRepository.update({ booth_id: boothId, tenant_id: tenantId, is_active: true }, { is_active: false });
     const saved = await this.ruleSetRepository.save(nextVersion);
@@ -793,6 +815,7 @@ async isHoliday(boothId: string, tenantId: string, targetDate: Date = new Date()
         posBarraMinutes: saved.pos_barra_minutes,
         openingTime: saved.opening_time,
         closingTime: saved.closing_time,
+        allowedBrokerStages: saved.allowed_broker_stages,
       },
     });
 

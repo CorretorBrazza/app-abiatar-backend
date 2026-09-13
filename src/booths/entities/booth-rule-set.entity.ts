@@ -108,6 +108,12 @@ export class BoothRuleSet {
     enabled?: boolean;
   }>;
 
+  @Column({
+    type: 'jsonb',
+    default: () => `'["treinamento","estagiario","corretor_creci"]'::jsonb`,
+  })
+  allowed_broker_stages: ('treinamento' | 'estagiario' | 'corretor_creci')[];
+
   @Column({ type: 'uuid', nullable: true })
   created_by: string | null;
 

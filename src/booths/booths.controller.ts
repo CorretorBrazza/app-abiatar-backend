@@ -107,8 +107,8 @@ export class BoothsController {
   }
 
   @Get()
-  async findAll(@TenantId() tenantId: string, @CurrentUser() currentUser: { role: string }) {
-    return this.boothsService.findAll(tenantId, currentUser.role);
+  async findAll(@TenantId() tenantId: string, @CurrentUser() currentUser: { sub: string; role: string }) {
+    return this.boothsService.findAll(tenantId, currentUser.role, currentUser.sub);
   }
 
   @Get('assigned')

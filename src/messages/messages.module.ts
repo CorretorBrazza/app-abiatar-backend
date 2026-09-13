@@ -11,7 +11,7 @@ import { AuthModule } from '../auth/auth.module'; // Importa para habilitar a va
 @Module({
   imports: [
     TypeOrmModule.forFeature([Message, MessageRecipient, User]),
-    AuthModule, // <-- IMPORTANTE para que as rotas de Inbox fiquem protegidas
+    AuthModule,
   ],
   controllers: [MessagesController],
   providers: [MessagesService],

@@ -53,7 +53,7 @@ export class Booth {
   published_at: Date | null;
 
   @Column({ type: 'uuid', nullable: true })
-  published_by: string | null; // <-- AJUSTADO PARA "string | null" para tipagem estrita
+  published_by: string | null;
 
   @ManyToOne(() => User, { onDelete: 'SET NULL', nullable: true })
   @JoinColumn({ name: 'manager_id' })
@@ -61,7 +61,7 @@ export class Booth {
 
   @ManyToOne(() => User, { onDelete: 'SET NULL', nullable: true })
   @JoinColumn({ name: 'published_by' })
-  publisher: User | null; // <-- AJUSTADO PARA "User | null" para tipagem estrita
+  publisher: User | null;
 
   @CreateDateColumn()
   created_at: Date;

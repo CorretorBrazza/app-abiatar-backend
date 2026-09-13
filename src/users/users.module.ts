@@ -12,7 +12,7 @@ import { AuditModule } from '../audit/audit.module'; // Importa para herdar a va
 @Module({
   imports: [
     TypeOrmModule.forFeature([User, OnboardingLink, Tenant]),
-    AuthModule, // <-- ESSENCIAL para herdar o JwtAuthGuard
+    AuthModule,
     AuditModule,
   ],
   controllers: [UsersController],

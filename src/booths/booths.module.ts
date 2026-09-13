@@ -16,7 +16,7 @@ import { RealtimeModule } from '../realtime/realtime.module';
 @Module({
   imports: [
     TypeOrmModule.forFeature([Booth, BoothWifi, BoothReceptionist, BoothRuleSet, BoothHoliday, BoothSpecialSchedule, User]),
-    AuthModule, // <-- ESSENCIAL para que o JwtAuthGuard funcione neste controlador
+    AuthModule,
     AuditModule,
     RealtimeModule,
   ],

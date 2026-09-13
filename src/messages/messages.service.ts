@@ -158,7 +158,7 @@ export class MessagesService {
       where: { 
         recipient_id: recipientId, 
         tenant_id: tenantId,
-        deleted_at: IsNull() // <-- AJUSTADO PARA O FORMATO CORRETO DO TYPEORM 0.3+
+        deleted_at: IsNull()
       },
       relations: { 
         message: { sender: true }

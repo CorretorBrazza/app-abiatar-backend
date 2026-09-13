@@ -65,7 +65,7 @@ import { DevModule } from './dev/dev.module';
     UsersModule,
     PresencesModule,
     MessagesModule,
-    NotificationsModule, // <-- ADICIONE ESTA LINHA AO ARRAY
+    NotificationsModule,
     AuditModule,
     RealtimeModule,
     DevModule,

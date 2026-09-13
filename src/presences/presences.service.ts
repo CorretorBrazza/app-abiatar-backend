@@ -13,7 +13,7 @@ import { BoothSpecialSchedule } from '../booths/entities/booth-special-schedule.
 import { DeadManLog } from './entities/dead-man-log.entity';
 import { CheckInDto } from './dto/check-in.dto';
 import { PingResponseDto } from './dto/ping-response.dto';
-import { Message } from '../messages/entities/message.entity'; // <-- ADICIONE ESTA LINHA
+import { Message } from '../messages/entities/message.entity';
 import { MessageRecipient } from '../messages/entities/message-recipient.entity';
 import { NotificationsService } from '../notifications/notifications.service';
 import { RealtimeService } from '../realtime/realtime.service';
@@ -46,7 +46,7 @@ export class PresencesService {
     @InjectRepository(DeadManLog)
     private logRepository: Repository<DeadManLog>,
 
-    @InjectRepository(Message) // <-- ADICIONE ESTA INJEÇÃO
+    @InjectRepository(Message)
     private messageRepository: Repository<Message>,
 
     @InjectRepository(MessageRecipient)

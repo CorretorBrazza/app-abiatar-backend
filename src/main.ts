@@ -1,6 +1,6 @@
 // src/main.ts
-import * as dotenv from 'dotenv'; // <-- ADICIONE ESTA LINHA NA LINHA 1
-dotenv.config();                // <-- ADICIONE ESTA LINHA NA LINHA 2
+import * as dotenv from 'dotenv';
+dotenv.config();
 
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';

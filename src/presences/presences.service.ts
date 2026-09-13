@@ -1,6 +1,6 @@
 import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, IsNull, Between } from 'typeorm';
+import { Repository, IsNull, Between, In } from 'typeorm';
 import { Cron, CronExpression } from '@nestjs/schedule'; // Importa o decorador de tarefas agendadas
 
 import { Presence } from './entities/presence.entity';
@@ -1462,6 +1462,171 @@ export class PresencesService {
       boothId: boothId || null,
       presencePercentage: presencePercentage > 100 ? 100 : presencePercentage, // Limita a 100%
     };
+  }
+
+  /**
+   * Histórico do Corretor: resumo + presenças por dia dentro de um período.
+   * Acesso: Diretoria/RH consultam qualquer corretor; Corretor/Recepção apenas o próprio.
+   */
+  async getBrokerHistory(
+    actor: { sub: string; role: string },
+    tenantId: string,
+    brokerId: string,
+    startDateStr?: string,
+    endDateStr?: string,
+    boothId?: string,
+  ) {
+    const canViewAll = ['diretoria_level_1', 'platform_admin_level_0', 'rh_level_2', 'rh_level_1'].includes(actor.role);
+    const canViewOwn = ['corretor_level_3', 'recepcao_level_3'].includes(actor.role);
+    if (!canViewAll && !canViewOwn) {
+      throw new ForbiddenException('Acesso restrito ao histórico do corretor.');
+    }
+    if (!canViewAll && actor.sub !== brokerId) {
+      throw new ForbiddenException('Você só pode consultar o seu próprio histórico.');
+    }
+
+    const broker = await this.userRepository.findOne({ where: { id: brokerId, tenant_id: tenantId } });
+    if (!broker || broker.removed_at) throw new NotFoundException('Corretor não localizado no sistema.');
+    if (broker.role !== 'corretor_level_3') {
+      throw new BadRequestException('O histórico de presença é exclusivo para corretores.');
+    }
+
+    const tzNow = getNowInTimezone('America/Sao_Paulo');
+    const [curYear, curMonth] = tzNow.dateStr.split('-').map(Number);
+
+    const computeEnd = (endDateStr?: string) =>
+      endDateStr
+        ? new Date(getDateAtTimeInTimezone(endDateStr, '00:00').getTime() + 24 * 60 * 60 * 1000 - 1)
+        : new Date(getDateAtTimeInTimezone(tzNow.dateStr, '00:00').getTime() + 24 * 60 * 60 * 1000 - 1);
+
+    // Período máximo de 3 meses
+    let startDate: Date, endDate: Date;
+    if (startDateStr) {
+      startDate = getDateAtTimeInTimezone(startDateStr, '00:00');
+      endDate = computeEnd(endDateStr);
+    } else {
+      // Sem parâmetros: mês corrente
+      startDate = getDateAtTimeInTimezone(`${curYear}-${String(curMonth).padStart(2, '0')}-01`, '00:00');
+      endDate = computeEnd(undefined);
+    }
+    const rangeDays = Math.round((endDate.getTime() - startDate.getTime()) / (24 * 60 * 60 * 1000)) + 1;
+    if (rangeDays > 93) {
+      throw new BadRequestException('O período máximo para consulta do histórico é de 3 meses.');
+    }
+
+    const query = this.presenceRepository.createQueryBuilder('p')
+      .where('p.broker_id = :brokerId', { brokerId })
+      .andWhere('p.tenant_id = :tenantId', { tenantId })
+      .andWhere('p.check_in_at BETWEEN :start AND :end', { start: startDate, end: endDate })
+      .orderBy('p.check_in_at', 'ASC');
+    if (boothId) {
+      query.andWhere('p.booth_id = :boothId', { boothId });
+    }
+    const presences = await query.getMany();
+    const now = new Date();
+
+    // Mapa de plantões para exibir nomes
+    const boothIds = Array.from(new Set(presences.map((p) => p.booth_id)));
+    const booths = boothIds.length
+      ? await this.boothRepository.find({ where: { id: In(boothIds), tenant_id: tenantId } })
+      : [];
+    const boothMap = new Map(booths.map((b) => [b.id, b.name]));
+
+    // Mapa de gerentes
+    const managers = await this.userRepository.find({
+      where: { tenant_id: tenantId, role: 'gerencia_level_2', removed_at: IsNull() },
+    });
+    const managerMap = new Map(managers.map((m) => [m.id, m.nome_guerra || m.name]));
+
+    const totalCheckIns = presences.length;
+    const completedCount = presences.filter((p) => p.status === 'completed').length;
+    const invalidatedCount = presences.filter((p) => p.status === 'invalidated').length;
+    const onlineCount = presences.filter((p) => p.status === 'online').length;
+    const pontualCount = presences.filter((p) => p.roleta_entry_type === 'pontual').length;
+    const posBarraCount = presences.filter((p) => p.roleta_entry_type === 'pos_barra').length;
+    const totalMinutes = presences
+      .filter((p) => p.status !== 'invalidated')
+      .reduce((acc, p) => acc + this.getEffectiveMinutes(p, now), 0);
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    const punctualityRate = totalCheckIns > 0 ? Math.round((pontualCount / totalCheckIns) * 100) : 100;
+    const validationRate = completedCount + invalidatedCount > 0
+      ? Math.round((completedCount / (completedCount + invalidatedCount)) * 100)
+      : 100;
+    const activeDays = new Set(presences.map((p) => this.formatDateBR(p.check_in_at))).size;
+
+    const dayGroups = new Map<string, any[]>();
+    for (const p of presences) {
+      const day = this.formatDateBR(p.check_in_at);
+      const list = dayGroups.get(day) || [];
+      const pMinutes = this.getEffectiveMinutes(p, now);
+      const pHours = Math.floor(pMinutes / 60);
+      const pMin = pMinutes % 60;
+      list.push({
+        id: p.id,
+        boothId: p.booth_id,
+        boothName: boothMap.get(p.booth_id) || 'Plantão removido',
+        checkInAt: p.check_in_at,
+        checkOutAt: p.check_out_at,
+        lastConfirmedAt: p.last_confirmed_at,
+        accumulatedMinutes: p.status === 'invalidated' ? 0 : pMinutes,
+        hoursFormatted: p.status === 'invalidated' ? '0h 0m' : `${pHours}h ${pMin}m`,
+        roletaName: p.roleta_name || '—',
+        roletaEntryType: p.roleta_entry_type || '—',
+        roletaPosition: p.roleta_position ?? null,
+        status: p.status,
+        attendedByUserId: p.attended_by_user_id || null,
+      });
+      dayGroups.set(day, list);
+    }
+
+    const days = Array.from(dayGroups.entries())
+      .map(([date, entries]) => ({ date, entries }))
+      .sort((a, b) => (a.date < b.date ? -1 : 1));
+
+    return {
+      broker: {
+        id: broker.id,
+        name: broker.name,
+        nomeGuerra: broker.nome_guerra || broker.name,
+        creci: broker.creci || null,
+        brokerStage: broker.broker_stage || 'corretor_creci',
+        managerId: broker.manager_id,
+        managerName: broker.manager_id ? (managerMap.get(broker.manager_id) || 'Sem Gerente') : 'Sem Gerente',
+        status: broker.status,
+        approvedByHr: broker.approved_by_hr,
+        carenciaEndsAt: broker.carencia_ends_at,
+        stageExpiresAt: broker.stage_expires_at,
+        createdAt: broker.created_at,
+        lastCheckinAt: broker.last_checkin_at,
+      },
+      period: {
+        startDate: startDate.toISOString().split('T')[0],
+        endDate: endDate.toISOString().split('T')[0],
+      },
+      summary: {
+        totalCheckIns,
+        completedCount,
+        invalidatedCount,
+        onlineCount,
+        pontualCount,
+        posBarraCount,
+        totalMinutes,
+        totalHoursFormatted: `${hours}h ${minutes}m`,
+        punctualityRate,
+        validationRate,
+        activeDays,
+      },
+      days,
+    };
+  }
+
+  private formatDateBR(d: Date): string {
+    if (!d) return '—';
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${day}`;
   }
 
   // 12. Algoritmo de Score de Plantão: Retorna o mapa de calor de demanda por dia e hora [6]

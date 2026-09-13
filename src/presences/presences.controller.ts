@@ -79,6 +79,20 @@ export class PresencesController {
     return this.presencesService.processPresencesAndPings();
   }
 
+  // 0. Histórico do Corretor (GET /presences/history/:brokerId)
+  @Get('history/:brokerId')
+  @UseGuards(JwtAuthGuard)
+  async getBrokerHistory(
+    @Param('brokerId') brokerId: string,
+    @CurrentUser() currentUser: { sub: string; role: string },
+    @TenantId() tenantId: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Query('boothId') boothId?: string,
+  ) {
+    return this.presencesService.getBrokerHistory(currentUser, tenantId, brokerId, startDate, endDate, boothId);
+  }
+
   // 1. Rota de Auditoria Mensal do Corretor (GET /presences/statistics/broker/:brokerId) [6]
   @Get('statistics/broker/:brokerId')
   @UseGuards(JwtAuthGuard)

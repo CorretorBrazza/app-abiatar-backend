@@ -12,6 +12,7 @@ import {
 import { DevService } from './dev.service';
 import { CreateTenantDto } from './dto/create-tenant.dto';
 import { TestEmailDto, TestPushDto } from './dto/test-tools.dto';
+import { UpdateTenantSettingsDto } from './dto/update-tenant-settings.dto';
 
 @Controller('dev')
 export class DevController {
@@ -66,6 +67,19 @@ export class DevController {
   ) {
     this.ensureDevAuthenticated(authHeader);
     return this.devService.toggleTenantStatus(id, status);
+  }
+
+  /**
+   * Gestão de Tenants: Atualização de configurações (features.nova_identidade, etc.)
+   */
+  @Patch('tenants/:id/settings')
+  async updateTenantSettings(
+    @Param('id') id: string,
+    @Body() dto: UpdateTenantSettingsDto,
+    @Headers('authorization') authHeader?: string,
+  ) {
+    this.ensureDevAuthenticated(authHeader);
+    return this.devService.updateTenantSettings(id, dto);
   }
 
   /**

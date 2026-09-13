@@ -17,6 +17,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { RealtimeService } from '../realtime/realtime.service';
 import { CreateTenantDto } from './dto/create-tenant.dto';
 import { TestEmailDto, TestPushDto } from './dto/test-tools.dto';
+import { UpdateTenantSettingsDto } from './dto/update-tenant-settings.dto';
 
 @Injectable()
 export class DevService {
@@ -219,6 +220,9 @@ export class DevService {
         limite_plantoes: t.limite_plantoes,
         limite_corretores: t.limite_corretores,
         data_vencimento: t.data_vencimento,
+        features: {
+          nova_identidade: typeof t.settings?.features?.nova_identidade === 'boolean' ? t.settings.features.nova_identidade : false,
+        },
         created_at: t.created_at,
         stats: {
           totalUsers,
@@ -310,6 +314,52 @@ export class DevService {
     await this.tenantRepo.save(tenant);
 
     return { success: true, message: `Status do tenant "${tenant.name}" alterado para "${status}".`, tenant };
+  }
+
+  /**
+   * Gestão de Tenants: Atualização de configurações (settings) — ex.: features.nova_identidade
+   */
+  async updateTenantSettings(id: string, dto: UpdateTenantSettingsDto): Promise<Record<string, any>> {
+    const tenant = await this.tenantRepo.findOne({ where: { id } });
+    if (!tenant) throw new NotFoundException('Tenant não encontrado.');
+
+    const beforeFeatures = {
+      nova_identidade: typeof tenant.settings?.features?.nova_identidade === 'boolean' ? tenant.settings.features.nova_identidade : false,
+    };
+
+    const settings = { ...(tenant.settings || {}) };
+    if (dto.features) {
+      const features = { ...(settings.features || {}), ...dto.features };
+      settings.features = features;
+    }
+    tenant.settings = settings;
+    await this.tenantRepo.save(tenant);
+
+    const afterFeatures = {
+      nova_identidade: typeof tenant.settings.features?.nova_identidade === 'boolean' ? tenant.settings.features.nova_identidade : false,
+    };
+
+    const log = this.auditRepo.create({
+      tenant_id: tenant.id,
+      actor_user_id: null,
+      actor_role: 'platform_admin_level_0',
+      actor_email_snapshot: 'platform_admin@abiatar.bitimob.com.br',
+      action: 'superadmin.tenant_settings_updated',
+      session_id: 'dev-console',
+      entity_type: 'tenant',
+      entity_id: tenant.id,
+      before_data: { features: beforeFeatures },
+      after_data: { features: afterFeatures },
+      success: true,
+      metadata: { targetSlug: tenant.slug, targetName: tenant.name },
+    });
+    await this.auditRepo.save(log).catch((err) => this.logger.error(`[DevService] Falha ao gravar audit log: ${err.message}`));
+
+    return {
+      success: true,
+      message: `Configurações do tenant "${tenant.name}" atualizadas.`,
+      features: afterFeatures,
+    };
   }
 
   /**

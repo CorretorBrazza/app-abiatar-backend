@@ -7,12 +7,12 @@ import {
   UpdateDateColumn, 
   ManyToOne, 
   JoinColumn,
-  Unique // <-- ADICIONE "Unique" AQUI
+  Unique
 } from 'typeorm';
 import { Tenant } from '../tenants/tenant.entity';
 
 @Entity('users')
-@Unique(['tenant_id', 'nome_guerra']) // <-- ADICIONE ESTA UNICIDADE COMPOSTA
+@Unique(['tenant_id', 'nome_guerra'])
 export class User {
   @PrimaryGeneratedColumn('uuid')
   id: string;
@@ -96,6 +96,12 @@ export class User {
 
   @Column({ type: 'int', default: 0 })
   session_version: number;
+
+  @Column({ type: 'int', default: 0 })
+  session_version_mobile: number;
+
+  @Column({ type: 'int', default: 0 })
+  session_version_web: number;
 
   @CreateDateColumn()
   created_at: Date;

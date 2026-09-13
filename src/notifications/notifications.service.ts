@@ -1,7 +1,7 @@
 // src/notifications/notifications.service.ts
 import { Injectable, OnModuleInit, BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, In } from 'typeorm';
+import { Repository, In, Not } from 'typeorm';
 import { initializeApp, getApps, cert } from 'firebase-admin/app';
 import { PushDeviceToken } from './entities/push-device-token.entity';
 import { RegisterPushTokenDto } from './dto/register-push-token.dto';
@@ -11,6 +11,7 @@ import { Tenant } from '../tenants/tenant.entity';
 import { Presence } from '../presences/entities/presence.entity';
 import { BoothReceptionist } from '../booths/entities/booth-receptionist.entity';
 import { AuditService } from '../audit/audit.service';
+import { classifyDeviceType } from './utils/device-type.util';
 
 @Injectable()
 export class NotificationsService implements OnModuleInit {
@@ -51,7 +52,9 @@ export class NotificationsService implements OnModuleInit {
     dto: RegisterPushTokenDto,
     userId: string,
     tenantId: string,
-  ): Promise<{ id: string; platform: string; is_active: boolean }> {
+  ): Promise<{ id: string; platform: string; is_active: boolean; device_type: string }> {
+    const deviceType = classifyDeviceType(dto.deviceLabel);
+
     let deviceToken = await this.pushTokenRepository.findOne({ where: { token: dto.token } });
 
     if (!deviceToken) {
@@ -60,6 +63,7 @@ export class NotificationsService implements OnModuleInit {
         user_id: userId,
         tenant_id: tenantId,
         platform: dto.platform || 'web',
+        device_type: deviceType,
         device_label: dto.deviceLabel || null,
         is_active: true,
         last_seen_at: new Date(),
@@ -68,13 +72,33 @@ export class NotificationsService implements OnModuleInit {
       deviceToken.user_id = userId;
       deviceToken.tenant_id = tenantId;
       deviceToken.platform = dto.platform || deviceToken.platform;
+      deviceToken.device_type = deviceType;
       deviceToken.device_label = dto.deviceLabel || deviceToken.device_label;
       deviceToken.is_active = true;
       deviceToken.last_seen_at = new Date();
     }
 
     const saved = await this.pushTokenRepository.save(deviceToken);
-    return { id: saved.id, platform: saved.platform, is_active: saved.is_active };
+
+    // Desativa qualquer OUTRO token ativo do mesmo usuário e do MESMO tipo de aparelho.
+    // Não toca no token do outro tipo (se é mobile, não mexe no web, e vice-versa).
+    await this.pushTokenRepository.update(
+      {
+        user_id: userId,
+        tenant_id: tenantId,
+        device_type: deviceType,
+        is_active: true,
+        id: Not(saved.id),
+      },
+      { is_active: false },
+    );
+
+    return {
+      id: saved.id,
+      platform: saved.platform,
+      is_active: saved.is_active,
+      device_type: saved.device_type,
+    };
   }
 
   async listMyDevices(userId: string, tenantId: string) {

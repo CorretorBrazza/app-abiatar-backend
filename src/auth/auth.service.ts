@@ -12,6 +12,7 @@ import { RegisterTenantDto } from './dto/register-tenant.dto';
 import { LoginDto } from './dto/login.dto';
 import { AuditService } from '../audit/audit.service';
 import { EmailService } from '../notifications/email.service';
+import { classifyDeviceType } from '../notifications/utils/device-type.util';
 
 @Injectable()
 export class AuthService {
@@ -85,6 +86,8 @@ export class AuthService {
     user.must_change_password = false;
     user.password_reset_expires_at = null;
     user.session_version = (user.session_version || 0) + 1;
+    user.session_version_mobile = (user.session_version_mobile || 0) + 1;
+    user.session_version_web = (user.session_version_web || 0) + 1;
     await this.userRepository.save(user);
 
     void this.auditService.record({ tenantId: user.tenant_id, actorUserId: user.id, actorRole: user.role, actorEmail: user.email }, {
@@ -111,6 +114,8 @@ export class AuthService {
     expires.setMinutes(expires.getMinutes() + 30);
     target.password_reset_expires_at = expires;
     target.session_version = (target.session_version || 0) + 1;
+    target.session_version_mobile = (target.session_version_mobile || 0) + 1;
+    target.session_version_web = (target.session_version_web || 0) + 1;
     await this.userRepository.save(target);
 
     void this.auditService.record({ tenantId, actorUserId: actor.id, actorRole: actor.role, actorEmail: actor.email }, {
@@ -143,6 +148,8 @@ export class AuthService {
     expires.setMinutes(expires.getMinutes() + 30);
     user.password_reset_expires_at = expires;
     user.session_version = (user.session_version || 0) + 1;
+    user.session_version_mobile = (user.session_version_mobile || 0) + 1;
+    user.session_version_web = (user.session_version_web || 0) + 1;
     await this.userRepository.save(user);
 
     const tenant = await this.tenantRepository.findOne({ where: { id: user.tenant_id } });
@@ -248,11 +255,23 @@ export class AuthService {
     }
 
     // Define o conteúdo (payload) do token
+    const deviceType = classifyDeviceType(dto.userAgent);
+    if (deviceType === 'mobile') {
+      user.session_version_mobile = (user.session_version_mobile || 0) + 1;
+    } else {
+      user.session_version_web = (user.session_version_web || 0) + 1;
+    }
+    await this.userRepository.save(user);
+
     const payload = {
       sub: user.id,
       tenant_id: user.tenant_id,
       role: user.role,
-      session_version: user.session_version || 0,
+      session_version:
+        deviceType === 'mobile'
+          ? user.session_version_mobile
+          : user.session_version_web,
+      device_type: deviceType,
       must_change_password: !!user.must_change_password,
     };
 

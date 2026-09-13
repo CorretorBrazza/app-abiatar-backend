@@ -31,6 +31,8 @@ import { AddPresenceConfirmationCycle1787000011000 } from './migrations/17870000
 import { AddBoothRulePeriods1787000012000 } from './migrations/1787000012000-AddBoothRulePeriods';
 import { AddBrokerStageColumn1787000013000 } from './migrations/1787000013000-AddBrokerStageColumn';
 import { AddPresenceAttendanceQueue1787000014000 } from './migrations/1787000014000-AddPresenceAttendanceQueue';
+import { AddDeviceTypeToPushTokens1787000015000 } from './migrations/1787000015000-AddDeviceTypeToPushTokens';
+import { AddSessionVersionByDeviceType1787000016000 } from './migrations/1787000016000-AddSessionVersionByDeviceType';
 
 export const AppDataSource = new DataSource({
   type: 'postgres',
@@ -68,6 +70,8 @@ export const AppDataSource = new DataSource({
     AddBoothRulePeriods1787000012000,
     AddBrokerStageColumn1787000013000,
     AddPresenceAttendanceQueue1787000014000,
+    AddDeviceTypeToPushTokens1787000015000,
+    AddSessionVersionByDeviceType1787000016000,
   ],
   migrationsRun: false,
   migrationsTransactionMode: 'each',

@@ -553,6 +553,8 @@ export class UsersService implements OnModuleInit {
     if (dto.password) {
       user.password_hash = await bcrypt.hash(dto.password, await bcrypt.genSalt(10));
       user.session_version = (user.session_version || 0) + 1;
+      user.session_version_mobile = (user.session_version_mobile || 0) + 1;
+      user.session_version_web = (user.session_version_web || 0) + 1;
     }
     if (dto.mustChangePassword !== undefined) {
       user.must_change_password = dto.mustChangePassword;

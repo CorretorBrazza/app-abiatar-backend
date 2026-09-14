@@ -1816,6 +1816,8 @@ export class PresencesService {
       const attendanceSummary = {
         total: attendanceRecords.length,
         vezCount: attendanceRecords.filter((r) => r.tipo === 'vez').length,
+        agendamentoCount: attendanceRecords.filter((r) => r.tipo === 'agendamento').length,
+        retornoCount: attendanceRecords.filter((r) => r.tipo === 'retorno').length,
         simplesCount: attendanceRecords.filter((r) => r.tipo === 'simples').length,
       };
 

@@ -307,6 +307,36 @@ export class AuthService {
         primary_color: tenant.primary_color,
         secondary_color: tenant.secondary_color,
         logo_url: tenant.logo_url,
+        settings: tenant.settings || {},
+      },
+    };
+  }
+
+  async getMe(userId: string, tenantId: string) {
+    const user = await this.userRepository.findOne({ where: { id: userId } });
+    if (!user || user.tenant_id !== tenantId) {
+      throw new UnauthorizedException('Sessão inválida.');
+    }
+    const tenant = await this.tenantRepository.findOne({ where: { id: tenantId } });
+    if (!tenant) {
+      throw new UnauthorizedException('Tenant não encontrado.');
+    }
+    return {
+      user: {
+        id: user.id,
+        name: user.name,
+        nome_guerra: user.nome_guerra,
+        role: user.role,
+        must_change_password: !!user.must_change_password,
+      },
+      tenant: {
+        id: tenant.id,
+        name: tenant.name,
+        slug: tenant.slug,
+        primary_color: tenant.primary_color,
+        secondary_color: tenant.secondary_color,
+        logo_url: tenant.logo_url,
+        settings: tenant.settings || {},
       },
     };
   }

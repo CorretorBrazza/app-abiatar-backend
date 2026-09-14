@@ -2769,6 +2769,10 @@ export class PresencesService {
     if (!(await this.isNovaIdentidade(tenantId))) {
       throw new ForbiddenException('O resumo de atendimentos é exclusivo da nova identidade.');
     }
+    const canView = ['diretoria_level_1', 'platform_admin_level_0', 'gerencia_level_2', 'recepcao_level_3'].includes(actor.role);
+    if (!canView) {
+      throw new ForbiddenException('Apenas Diretoria, Gerência e Recepção podem consultar o resumo de atendimentos.');
+    }
     const range = await this.resolveDateRange(filters.startDate, filters.endDate);
     const summary = await this.computeAttendanceSummary(tenantId, range, filters.boothId);
     return { period: { startDate: range.startStr, endDate: range.endStr }, ...summary };

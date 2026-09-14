@@ -88,6 +88,12 @@ export class Presence {
   @Column({ type: 'uuid', nullable: true })
   attended_by_user_id: string | null; // Registro de quem realizou o atendimento
 
+  @Column({ type: 'int', default: 0 })
+  vez_rotations: number; // Quantas vezes o corretor fez a rotação "Atendimento vez" na fila
+
+  @Column({ type: 'timestamp', nullable: true })
+  last_vez_at: Date | null; // Última chamada "Atendimento vez" deste corretor
+
   @Column({
     type: 'enum',
     enum: ['online', 'paused', 'absent', 'completed', 'invalidated'],

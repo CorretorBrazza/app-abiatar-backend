@@ -204,7 +204,8 @@ export class PresencesController {
     return this.presencesService.forceValidate(currentUser, tenantId, dto);
   }
 
-  // Atendimento presencial (Plano B): a Recepção convoca o próximo da fila da roleta
+  // Atendimento SIMPLES (novo fluxo): a Recepção convoca qualquer corretor da fila (Aviso + Registro,
+  // sem rotação de posição)
   @Post('attend/:presenceId')
   @UseGuards(JwtAuthGuard)
   async attendPresence(
@@ -213,6 +214,31 @@ export class PresencesController {
     @TenantId() tenantId: string,
   ) {
     return this.presencesService.attendPresence(currentUser, tenantId, presenceId);
+  }
+
+  // Atendimento VEZ: somente para o PRIMEIRO da fila da roleta. Após atender, retorna ao final
+  @Post('attend-vez/:presenceId')
+  @UseGuards(JwtAuthGuard)
+  async attendVez(
+    @Param('presenceId') presenceId: string,
+    @CurrentUser() currentUser: { sub: string; role: string },
+    @TenantId() tenantId: string,
+  ) {
+    return this.presencesService.attendVez(currentUser, tenantId, presenceId);
+  }
+
+  // Registro de TODOS os atendimentos para análise posterior (Diretoria/RH/Recepção/Corretor)
+  @Get('attendances')
+  @UseGuards(JwtAuthGuard)
+  async listAttendances(
+    @CurrentUser() currentUser: { sub: string; role: string },
+    @TenantId() tenantId: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Query('boothId') boothId?: string,
+    @Query('brokerId') brokerId?: string,
+  ) {
+    return this.presencesService.listAttendances(currentUser, tenantId, { startDate, endDate, boothId, brokerId });
   }
 
   // Fila da roleta do momento para a Recepção acompanhar os plantões atribuídos

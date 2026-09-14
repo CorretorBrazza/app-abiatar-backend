@@ -4,6 +4,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { PresencesService } from './presences.service';
 import { PresencesController } from './presences.controller';
 import { Presence } from './entities/presence.entity';
+import { AttendanceRecord } from './entities/attendance-record.entity';
 import { Booth } from '../booths/entities/booth.entity';
 import { BoothRuleSet } from '../booths/entities/booth-rule-set.entity';
 import { BoothHoliday } from '../booths/entities/booth-holiday.entity';
@@ -19,6 +20,7 @@ import { AuthModule } from '../auth/auth.module';
   imports: [
     TypeOrmModule.forFeature([
       Presence, 
+      AttendanceRecord,
       User,
       Booth,
       BoothRuleSet,

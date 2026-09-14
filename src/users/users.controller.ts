@@ -21,8 +21,8 @@ export class UsersController {
     requestedManagerId: string,
     currentUser: { sub: string; role: string },
   ): string {
-    if (!['diretoria_level_1', 'gerencia_level_2'].includes(currentUser.role)) {
-      throw new ForbiddenException('Apenas diretoria ou gerência podem acessar esta operação.');
+    if (!['diretoria_level_1', 'platform_admin_level_0', 'gerencia_level_2'].includes(currentUser.role)) {
+      throw new ForbiddenException('Apenas diretoria, gerência ou plataforma podem acessar esta operação.');
     }
     if (currentUser.role === 'gerencia_level_2' && requestedManagerId !== currentUser.sub) {
       throw new ForbiddenException('A gerência só pode acessar a própria equipe.');
@@ -44,7 +44,7 @@ export class UsersController {
     @CurrentUser() currentUser: { sub: string; role: string },
     @TenantId() tenantId: string,
   ) {
-    if (currentUser.role !== 'diretoria_level_1') {
+    if (!['diretoria_level_1', 'platform_admin_level_0'].includes(currentUser.role)) {
       throw new ForbiddenException('Apenas a diretoria pode criar gerentes.');
     }
     return this.usersService.createManager(createManagerDto, tenantId);
@@ -114,7 +114,7 @@ export class UsersController {
     @CurrentUser() currentUser: { role: string },
     @TenantId() tenantId: string,
   ) {
-    if (currentUser.role !== 'diretoria_level_1') {
+    if (!['diretoria_level_1', 'platform_admin_level_0'].includes(currentUser.role)) {
       throw new ForbiddenException('Somente a Diretoria pode abrir estes cards.');
     }
     return this.usersService.getManagementUser(userId, tenantId);
@@ -142,7 +142,7 @@ export class UsersController {
     @CurrentUser() currentUser: { sub: string; role: string },
     @TenantId() tenantId: string,
   ) {
-    if (currentUser.role !== 'diretoria_level_1') {
+    if (!['diretoria_level_1', 'platform_admin_level_0'].includes(currentUser.role)) {
       throw new ForbiddenException('Somente a Diretoria pode excluir Gerentes, Recepção ou RH.');
     }
     return this.usersService.removeManagementUser(userId, body?.reason || 'Exclusão solicitada pela Diretoria', currentUser, tenantId);

@@ -309,12 +309,6 @@ export class UsersService implements OnModuleInit {
       if (tenantSlug?.trim()) {
         tenant = await this.tenantRepository.findOne({ where: { slug: tenantSlug.trim() } });
       }
-      if (!tenant) {
-        tenant = await this.tenantRepository.findOne({ where: { slug: 'abiatar-teste' } });
-      }
-      if (!tenant) {
-        tenant = await this.tenantRepository.findOne({ order: { created_at: 'ASC' } });
-      }
     } catch (err) {
       console.error('[USERS] Erro ao buscar tenant em getPublicManagers:', err);
     }
@@ -324,14 +318,6 @@ export class UsersService implements OnModuleInit {
       if (tenant) {
         managers = await this.userRepository.find({
           where: { tenant_id: tenant.id, role: 'gerencia_level_2', status: 'active', removed_at: IsNull() },
-          select: { id: true, name: true, nome_guerra: true },
-          order: { nome_guerra: 'ASC' },
-        });
-      }
-
-      if (managers.length === 0) {
-        managers = await this.userRepository.find({
-          where: { role: 'gerencia_level_2', status: 'active', removed_at: IsNull() },
           select: { id: true, name: true, nome_guerra: true },
           order: { nome_guerra: 'ASC' },
         });

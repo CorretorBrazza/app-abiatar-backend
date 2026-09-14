@@ -129,7 +129,7 @@ export class BoothsController {
     @CurrentUser() currentUser: { role: string },
     @TenantId() tenantId: string,
   ) {
-    if (currentUser.role !== 'diretoria_level_1') {
+    if (currentUser.role !== 'diretoria_level_1' && currentUser.role !== 'platform_admin_level_0') {
       throw new ForbiddenException('Somente a Diretoria pode atribuir Recepção a plantões.');
     }
     return this.boothsService.assignReceptionist(boothId, receptionistId, tenantId);
@@ -150,7 +150,7 @@ export class BoothsController {
     @CurrentUser() currentUser: { role: string },
     @TenantId() tenantId: string,
   ) {
-    if (currentUser.role !== 'diretoria_level_1') {
+    if (currentUser.role !== 'diretoria_level_1' && currentUser.role !== 'platform_admin_level_0') {
       throw new ForbiddenException('Somente a Diretoria pode remover Recepção de plantões.');
     }
     return this.boothsService.removeReceptionist(boothId, receptionistId, tenantId);

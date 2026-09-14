@@ -35,7 +35,13 @@ export class MessagesService {
       select: { id: true, name: true, nome_guerra: true, email: true, role: true, manager_id: true },
       order: { role: 'ASC', nome_guerra: 'ASC' },
     });
-    return users.filter((user) => user.id !== actor.id);
+    const showEmail = ['diretoria_level_1', 'platform_admin_level_0', 'gerencia_level_2', 'rh_level_1', 'rh_level_2'].includes(actor.role);
+    return users
+      .filter((user) => user.id !== actor.id)
+      .map((user) => {
+        const plain = { id: user.id, name: user.name, nome_guerra: user.nome_guerra, role: user.role, manager_id: user.manager_id };
+        return showEmail ? { ...plain, email: user.email } : plain;
+      });
   }
 
   // 1. Envia um comunicado oficial roteando os destinatários de forma dinâmica por escopo [12]

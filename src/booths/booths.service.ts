@@ -753,7 +753,7 @@ async isHoliday(boothId: string, tenantId: string, targetDate: Date = new Date()
     actor: { id: string; role: string; email?: string },
     dto: UpdateBoothRulesDto,
   ): Promise<BoothRuleSet> {
-    if (actor.role !== 'diretoria_level_1') {
+    if (actor.role !== 'diretoria_level_1' && actor.role !== 'platform_admin_level_0') {
       throw new NotFoundException('Configuração de plantão não encontrada.');
     }
     await this.findOne(boothId, tenantId);

@@ -486,7 +486,7 @@ export class UsersService implements OnModuleInit {
 
   private async resolvePageSize(tenantId: string, requested?: number) {
     const configured = Number((await this.tenantRepository.findOne({ where: { id: tenantId }, select: { settings: true } }))?.settings?.pagination?.managementPageSize);
-    return Math.min(100, Math.max(5, Number(requested) || configured || 25));
+    return Math.min(500, Math.max(5, Number(requested) || configured || 25));
   }
 
   async listManagementUsers(role: string, tenantId: string, query: { page?: number; pageSize?: number; search?: string; status?: string } = {}) {

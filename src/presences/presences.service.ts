@@ -77,16 +77,18 @@ export class PresencesService {
     return p.accumulated_minutes || 0;
   }
 
-  /* Estabelece se o tenant usa a "nova identidade" (features.nova_identidade = true).
-     O fluxo novo de atendimento (simples/vez, fora da janela, registro de atendimentos)
-     só vale para esses tenants; os demais continuam com o comportamento legado. */
+  /* Estabelece se o tenant usa a "nova identidade" (features.nova_identidade).
+     A nova identidade é o PADRÃO (mesmo contrato do front: useLayoutFlag resolve como nova
+     quando a flag não está setada); apenas `features.nova_identidade = false` explícito
+     mantém o comportamento legado. O fluxo novo de atendimento (simples/vez, fora da janela,
+     registro de atendimentos) vale para esses tenants; os demais seguem o legado. */
   private async isNovaIdentidade(tenantId: string): Promise<boolean> {
     try {
       const tenant = await this.tenantRepository.findOne({ where: { id: tenantId } });
       const features = tenant?.settings?.features as { nova_identidade?: boolean } | undefined;
-      return features?.nova_identidade === true;
+      return features?.nova_identidade !== false;
     } catch {
-      return false;
+      return true;
     }
   }
 

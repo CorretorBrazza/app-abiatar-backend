@@ -2685,13 +2685,39 @@ export class PresencesService {
     return { perBooth, totals };
   }
 
-  /* Elegíveis para o próximo sábado/domingo POR PLANTÃO (mesma regra do Command Center). */
+  /* Elegíveis para o próximo sábado/domingo POR PLANTÃO (mesma regra do Command Center).
+     Conta os períodos válidos da semana atual de TODOS os corretores x plantões em UMA querie
+     (GROUP BY broker_id, booth_id) para evitar o custo N+1 que estourava o relatório da recepção. */
   private async computeWeekendEligibilityPerBooth(tenantId: string, booths: Booth[]) {
     const userRepo = this.presenceRepository.manager.getRepository(User);
     const brokers = await userRepo.find({
       where: { tenant_id: tenantId, role: 'corretor_level_3', status: 'active', removed_at: IsNull() },
       order: { name: 'ASC' },
     });
+
+    const tzNow = getNowInTimezone('America/Sao_Paulo');
+    const mondayOffset = tzNow.dayOfWeek === 0 ? -6 : 1 - tzNow.dayOfWeek;
+    const todayAnchor = getDateAtTimeInTimezone(tzNow.dateStr, '00:00');
+    const startOfWeek = new Date(todayAnchor);
+    startOfWeek.setUTCDate(startOfWeek.getUTCDate() + mondayOffset);
+    const endOfFriday = new Date(startOfWeek.getTime() + 4 * 24 * 60 * 60 * 1000 + 23 * 60 * 60 * 1000 + 59 * 60 * 1000 + 59 * 1000 + 999);
+
+    const rows = (await this.presenceRepository
+      .createQueryBuilder('presence')
+      .select('presence.broker_id', 'brokerId')
+      .addSelect('presence.booth_id', 'boothId')
+      .addSelect(`COUNT(*) FILTER (WHERE presence.status = 'completed' AND presence.accumulated_minutes >= COALESCE(presence.minimum_period_minutes, 120))::int`, 'validPeriods')
+      .where('presence.tenant_id = :tenantId', { tenantId })
+      .andWhere('presence.status IN (:...statuses)', { statuses: ['completed', 'invalidated'] })
+      .andWhere('presence.check_in_at BETWEEN :start AND :end', { start: startOfWeek, end: endOfFriday })
+      .groupBy('presence.broker_id')
+      .addGroupBy('presence.booth_id')
+      .getRawMany()) as Array<{ brokerId: string; boothId: string; validPeriods: number }>;
+
+    const validByBrokerBooth = new Map<string, number>();
+    for (const r of rows) {
+      validByBrokerBooth.set(`${r.brokerId}::${r.boothId}`, Number(r.validPeriods) || 0);
+    }
 
     const result: Array<{
       boothId: string;
@@ -2713,10 +2739,10 @@ export class PresencesService {
       const sunday: Array<{ brokerId: string; nomeGuerra: string }> = [];
       if (weekendEnabled) {
         for (const broker of brokers) {
-          const metrics = await this.getCurrentWeekPeriodMetrics(broker.id, tenantId, booth.id);
+          const validPeriods = validByBrokerBooth.get(`${broker.id}::${booth.id}`) ?? 0;
           const nomeGuerra = broker.nome_guerra || broker.name;
-          if (metrics.validPeriods >= satReq) saturday.push({ brokerId: broker.id, nomeGuerra });
-          if (metrics.validPeriods >= sunReq) sunday.push({ brokerId: broker.id, nomeGuerra });
+          if (validPeriods >= satReq) saturday.push({ brokerId: broker.id, nomeGuerra });
+          if (validPeriods >= sunReq) sunday.push({ brokerId: broker.id, nomeGuerra });
         }
       }
 

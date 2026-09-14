@@ -2467,9 +2467,11 @@ export class PresencesService {
     };
   }
 
-  // Fila unificada e recalculada: desconsidera corretores já atendidos e recalcula a posição efetiva.
-  // rotationOrder (nova identidade): ordena primeiro por vez_rotations (quem atendeu menos na
-  // frente); legado mantém a ordenação original por posição da roleta/horário de check-in.
+  // Fila unificada e recalculada: desconsidera corretores já atendidos. A exibição padrão é a
+  // SEQUÊNCIA DO SORTEIO EFETIVAMENTE FEITO (roleta_position) — é o que a Recepção precisa ver.
+  // rotationOrder=true é usado só pelo "Atendimento vez" (ordem de serviço com rotação: quem
+  // atendeu menos na frente). isFirst/effectivePosition SEMPRE refletem a ordem de serviço
+  // (rotação), para a UI saber quem é o próximo a ser convocado mesmo exibindo o sorteio.
   private async getEffectiveQueue(boothId: string, tenantId: string, roletaName: string, rotationOrder = false) {
     const queuePresences = await this.presenceRepository.find({
       where: {
@@ -2482,34 +2484,54 @@ export class PresencesService {
       relations: { broker: true },
     });
 
-    const sortedQueue = queuePresences.sort((a, b) => {
+    const MAX = Number.MAX_SAFE_INTEGER;
+    const byCheckIn = (a: Presence, b: Presence): number =>
+      new Date(a.check_in_at).getTime() - new Date(b.check_in_at).getTime();
+
+    // Ordem de SERVIÇO ("Atendimento vez"): cada vez que o primeiro atende, ele volta para o
+    // ÚLTIMO da fila (vez_rotations +1). Prioriza quem tem MENOS rotações e, no empate, a posição
+    // da roleta e o horário de check-in. Define quem é o próximo a ser convocado.
+    const serviceOrder = [...queuePresences].sort((a, b) => {
+      const aRot = a.vez_rotations ?? 0;
+      const bRot = b.vez_rotations ?? 0;
+      if (aRot !== bRot) return aRot - bRot;
+      const aPos = a.roleta_position ?? MAX;
+      const bPos = b.roleta_position ?? MAX;
+      if (aPos !== bPos) return aPos - bPos;
+      return byCheckIn(a, b);
+    });
+    const serviceRank = new Map<string, number>();
+    serviceOrder.forEach((p, index) => serviceRank.set(p.id, index));
+
+    // Ordem de EXIBIÇÃO: sequência do sorteio (posição da roleta) por padrão; rotação de serviço
+    // somente quando rotationOrder=true (chamada interna do "Atendimento vez").
+    const sortedQueue = [...queuePresences].sort((a, b) => {
       if (rotationOrder) {
-        const aRot = a.vez_rotations ?? 0;
-        const bRot = b.vez_rotations ?? 0;
-        if (aRot !== bRot) return aRot - bRot;
+        return (serviceRank.get(a.id) ?? MAX) - (serviceRank.get(b.id) ?? MAX);
       }
-      const aPos = a.roleta_position ?? Number.MAX_SAFE_INTEGER;
-      const bPos = b.roleta_position ?? Number.MAX_SAFE_INTEGER;
-      if (aPos === bPos) {
-        return new Date(a.check_in_at).getTime() - new Date(b.check_in_at).getTime();
-      }
-      return aPos - bPos;
+      const aPos = a.roleta_position ?? MAX;
+      const bPos = b.roleta_position ?? MAX;
+      if (aPos !== bPos) return aPos - bPos;
+      return byCheckIn(a, b);
     });
     const positioned = sortedQueue.filter((p) => p.roleta_position !== null);
     const notPositioned = sortedQueue.filter((p) => p.roleta_position === null);
 
-    return [...positioned, ...notPositioned].map((p, index) => ({
-      presenceId: p.id,
-      brokerId: p.broker_id,
-      nomeGuerra: p.broker?.nome_guerra || 'Corretor',
-      roletaPosition: p.roleta_position,
-      effectivePosition: index + 1,
-      isFirst: index === 0,
-      roletaEntryType: p.roleta_entry_type,
-      vezRotations: p.vez_rotations ?? 0,
-      minutesActive: Math.max(0, Math.floor((Date.now() - new Date(p.validation_starts_at || p.check_in_at).getTime()) / 1000 / 60)),
-      checkInAt: p.check_in_at,
-    }));
+    return [...positioned, ...notPositioned].map((p, index) => {
+      const rank = serviceRank.get(p.id) ?? index;
+      return {
+        presenceId: p.id,
+        brokerId: p.broker_id,
+        nomeGuerra: p.broker?.nome_guerra || 'Corretor',
+        roletaPosition: p.roleta_position,
+        effectivePosition: rank + 1,
+        isFirst: rank === 0,
+        roletaEntryType: p.roleta_entry_type,
+        vezRotations: p.vez_rotations ?? 0,
+        minutesActive: Math.max(0, Math.floor((Date.now() - new Date(p.validation_starts_at || p.check_in_at).getTime()) / 1000 / 60)),
+        checkInAt: p.check_in_at,
+      };
+    });
   }
 
   // Fila do plantão para a Recepção: mostra somente a roleta do momento (roleta ativa)
@@ -2587,7 +2609,9 @@ export class PresencesService {
       return novaIdentidade ? { ...emptyQueue, outOfWindow } : emptyQueue;
     }
 
-    const queue = await this.getEffectiveQueue(booth.id, tenantId, roletaName, novaIdentidade);
+    // Fila exibida na SEQUÊNCIA DO SORTEIO (posição da roleta). isFirst/effectivePosition continuam
+    // refletindo a rotação do "Atendimento vez" (quem é o próximo a ser convocado).
+    const queue = await this.getEffectiveQueue(booth.id, tenantId, roletaName);
 
     const awaitingRevalidation = await this.presenceRepository.find({
       where: {

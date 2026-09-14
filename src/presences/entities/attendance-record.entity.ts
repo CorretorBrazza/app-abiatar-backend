@@ -39,7 +39,7 @@ export class AttendanceRecord {
   booth: Booth;
 
   @Column({ type: 'varchar', length: 20 })
-  tipo: string; // 'vez' | 'simples'
+  tipo: string; // 'vez' | 'agendamento' | 'retorno'
 
   @Column({ type: 'boolean', default: false })
   in_sequence: boolean; // true = dentro da sequência da roleta; false = fora da janela/sequência

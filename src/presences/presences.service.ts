@@ -1,10 +1,11 @@
 import { Injectable, BadRequestException, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, IsNull, Between, In } from 'typeorm';
+import { Repository, IsNull, Between, In, Not } from 'typeorm';
 import { Cron, CronExpression } from '@nestjs/schedule'; // Importa o decorador de tarefas agendadas
 
 import { Presence } from './entities/presence.entity';
 import { AttendanceRecord } from './entities/attendance-record.entity';
+import { CrmDelivery } from './entities/crm-delivery.entity';
 import { Tenant } from '../tenants/tenant.entity';
 import { User } from '../users/user.entity';
 import { Booth } from '../booths/entities/booth.entity';
@@ -55,6 +56,9 @@ export class PresencesService {
     @InjectRepository(AttendanceRecord)
     private attendanceRepository: Repository<AttendanceRecord>,
 
+    @InjectRepository(CrmDelivery)
+    private crmDeliveryRepository: Repository<CrmDelivery>,
+
     @InjectRepository(Message)
     private messageRepository: Repository<Message>,
 
@@ -93,7 +97,9 @@ export class PresencesService {
     return elapsedMinutes >= Number(presence.minimum_period_minutes ?? 120) ? 'completed' : 'invalidated';
   }
 
-  /* Constrói um registro de atendimento (vez ou simples) + notifica o corretor em tempo real. */
+  /* Constrói um registro de atendimento (da vez/agendamento/retorno) + notifica o corretor em
+     tempo real. Dados opcionais do cliente (nome/telefone/email) NÃO são armazenados: seguem via
+     API para o CRM (webhook configurável). */
   private async recordAttendance(
     tenantId: string,
     opts: {
@@ -101,9 +107,11 @@ export class PresencesService {
       brokerId: string;
       booth: Booth;
       atorId: string;
-      tipo: 'vez' | 'simples';
+      tipo: 'vez' | 'agendamento' | 'retorno';
       inSequence: boolean;
       message: string;
+      brokerName: string;
+      cliente?: { nome?: string; telefone?: string; email?: string } | null;
     },
   ) {
     const record = this.attendanceRepository.create({
@@ -133,7 +141,105 @@ export class PresencesService {
         attendedAt: saved.attended_at,
       },
     });
+
+    await this.sendClienteToCrm(tenantId, {
+      attendanceId: saved.id,
+      tipo: saved.tipo,
+      brokerId: opts.brokerId,
+      brokerName: opts.brokerName,
+      boothName: opts.booth.name,
+      attendedById: opts.atorId,
+      cliente: opts.cliente ?? null,
+    });
+
     return saved;
+  }
+
+  /* Envio dos dados de cliente para o CRM (webhook configurável via env): CRM_WEBHOOK_URL e
+     CRM_WEBHOOK_TOKEN. Best-effort — falha NUNCA bloqueia o atendimento. Guardamos apenas o
+     log de entrega (sem PII) em crm_deliveries. */
+  private async sendClienteToCrm(
+    tenantId: string,
+    opts: {
+      attendanceId: string;
+      tipo: string;
+      brokerId: string;
+      brokerName: string | null;
+      boothName: string;
+      attendedById: string;
+      cliente: { nome?: string; telefone?: string; email?: string } | null;
+    },
+  ) {
+    const hasCliente = !!(
+      opts.cliente?.nome || opts.cliente?.telefone || opts.cliente?.email
+    );
+    const url = process.env.CRM_WEBHOOK_URL;
+
+    if (!url) {
+      await this.crmDeliveryRepository.save(
+        this.crmDeliveryRepository.create({
+          tenant_id: tenantId,
+          attendance_id: opts.attendanceId,
+          tipo: opts.tipo,
+          status: 'not_configured',
+          error_message: 'CRM_WEBHOOK_URL não configurado.',
+          cliente_informado: hasCliente,
+          delivered_at: null,
+        }),
+      );
+      return { delivered: false, reason: 'not_configured' as const };
+    }
+
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(process.env.CRM_WEBHOOK_TOKEN
+            ? { Authorization: `Bearer ${process.env.CRM_WEBHOOK_TOKEN}` }
+            : {}),
+        },
+        body: JSON.stringify({
+          event: 'attendance.created',
+          attendanceId: opts.attendanceId,
+          tipo: opts.tipo,
+          brokerId: opts.brokerId,
+          boothName: opts.boothName,
+          attendedById: opts.attendedById,
+          attendedAt: new Date().toISOString(),
+          cliente: opts.cliente ?? null,
+        }),
+      });
+      if (!res.ok) {
+        throw new Error(`CRM respondeu ${res.status}`);
+      }
+      await this.crmDeliveryRepository.save(
+        this.crmDeliveryRepository.create({
+          tenant_id: tenantId,
+          attendance_id: opts.attendanceId,
+          tipo: opts.tipo,
+          status: 'delivered',
+          cliente_informado: hasCliente,
+          delivered_at: new Date(),
+        }),
+      );
+      return { delivered: true as const };
+    } catch (error) {
+      const message = error instanceof Error ? error.message.slice(0, 500) : 'Erro desconhecido';
+      console.error('[CRM] Falha ao enviar dados de cliente:', message);
+      await this.crmDeliveryRepository.save(
+        this.crmDeliveryRepository.create({
+          tenant_id: tenantId,
+          attendance_id: opts.attendanceId,
+          tipo: opts.tipo,
+          status: 'failed',
+          error_message: message,
+          cliente_informado: hasCliente,
+          delivered_at: null,
+        }),
+      );
+      return { delivered: false, reason: 'failed' as const };
+    }
   }
 
   private async getHolidayForBoothAndDate(boothId: string, tenantId: string, targetDate: Date = new Date()): Promise<{ isHoliday: boolean; name?: string; roletaTime?: string }> {
@@ -2240,7 +2346,12 @@ export class PresencesService {
 
   // Atendimento SIMPLES (novo fluxo): a Recepção convoca QUALQUER corretor da fila (inclusive os
   // "fora da janela") com Aviso + Registro, mas SEM rotação — o corretor permanece na mesma posição.
-  async attendPresence(actor: { sub: string; role: string }, tenantId: string, presenceId: string) {
+  async attendPresence(
+    actor: { sub: string; role: string },
+    tenantId: string,
+    presenceId: string,
+    dto: { tipo?: string; cliente?: { nome?: string; telefone?: string; email?: string } } = {},
+  ) {
     const presence = await this.presenceRepository.findOne({
       where: { id: presenceId, tenant_id: tenantId },
       relations: { broker: true },
@@ -2254,6 +2365,14 @@ export class PresencesService {
 
     if (presence.status !== 'online') {
       throw new BadRequestException('Só é possível convocar corretores com presença online no plantão.');
+    }
+
+    // Fora da vez: a Recepção discrimina AGENDAMENTO ou RETORNO (tipos do cliente). O "vez"
+    // é exclusivo do Atendimento vez (primeiro da fila). Dados de cliente são opcionais e
+    // seguem apenas para o CRM via API — nunca são persistidos no banco.
+    const tipo = dto.tipo && dto.tipo !== 'simples' ? dto.tipo : undefined;
+    if (tipo && !['agendamento', 'retorno'].includes(tipo)) {
+      throw new BadRequestException('Tipo de atendimento inválido. Use "agendamento" ou "retorno".');
     }
 
     // Nova identidade: convocação avulsa (Fora a vez — paciência: o fluxo novo registra o
@@ -2309,9 +2428,11 @@ export class PresencesService {
       brokerId: presence.broker_id,
       booth,
       atorId: actor.sub,
-      tipo: 'simples',
+      brokerName: presence.broker?.nome_guerra || 'Corretor',
+      tipo: (tipo as 'agendamento' | 'retorno') || 'agendamento',
       inSequence: presence.roleta_entry_type !== 'fora_janela',
       message,
+      cliente: dto.cliente,
     });
 
     void this.notificationsService.sendToUser(
@@ -2323,16 +2444,21 @@ export class PresencesService {
     );
 
     return {
-      message: `Aviso enviado para '${presence.broker?.nome_guerra || ''}'. Atendimento registrado (a posição na fila foi mantida).`,
+      message: `Aviso enviado para '${presence.broker?.nome_guerra || ''}'. Atendimento ${tipo || 'agendamento'} registrado (a posição na fila foi mantida).`,
       attendanceId: record.id,
-      tipo: 'simples',
+      tipo: (tipo as 'agendamento' | 'retorno') || 'agendamento',
       inSequence: presence.roleta_entry_type !== 'fora_janela',
     };
   }
 
   // Atendimento VEZ: somente para o PRIMEIRO corretor da sequência da roleta. Após atender,
   // ele retorna ao FINAL da fila (rotação) e segue online até encerrar o período/check-out.
-  async attendVez(actor: { sub: string; role: string }, tenantId: string, presenceId: string) {
+  async attendVez(
+    actor: { sub: string; role: string },
+    tenantId: string,
+    presenceId: string,
+    dto: { cliente?: { nome?: string; telefone?: string; email?: string } } = {},
+  ) {
     if (!(await this.isNovaIdentidade(tenantId))) {
       throw new ForbiddenException('O atendimento "vez" é exclusivo da nova identidade.');
     }
@@ -2374,9 +2500,11 @@ export class PresencesService {
       brokerId: presence.broker_id,
       booth,
       atorId: actor.sub,
+      brokerName: presence.broker?.nome_guerra || 'Corretor',
       tipo: 'vez',
       inSequence: true,
       message,
+      cliente: dto.cliente,
     });
 
     void this.notificationsService.sendToUser(
@@ -2400,7 +2528,7 @@ export class PresencesService {
   async listAttendances(
     actor: { sub: string; role: string },
     tenantId: string,
-    filters: { startDate?: string; endDate?: string; boothId?: string; brokerId?: string } = {},
+    filters: { startDate?: string; endDate?: string; boothId?: string; brokerId?: string; tipo?: string } = {},
   ) {
     if (!(await this.isNovaIdentidade(tenantId))) {
       throw new ForbiddenException('A listagem de atendimentos é exclusiva da nova identidade.');
@@ -2427,6 +2555,12 @@ export class PresencesService {
 
     const where: any = { tenant_id: tenantId, attended_at: Between(startDate, endDate) };
     if (filters.boothId) where.booth_id = filters.boothId;
+    if (filters.tipo) {
+      if (!['vez', 'agendamento', 'retorno'].includes(filters.tipo)) {
+        throw new BadRequestException('Tipo de atendimento inválido. Use "vez", "agendamento" ou "retorno".');
+      }
+      where.tipo = filters.tipo;
+    }
     if (filters.brokerId || (actor.role === 'corretor_level_3' && !canViewAll)) {
       where.broker_id = filters.brokerId || actor.sub;
     } else if (actor.role === 'corretor_level_3') {
@@ -2464,6 +2598,296 @@ export class PresencesService {
         attendedByUserId: r.attended_by_user_id,
         attendedByName: userMap.get(r.attended_by_user_id) || 'Recepção',
       })),
+    };
+  }
+
+  /* Valida o período (máx. 93 dias) e devolve os limites em Date, no fuso da operação. */
+  private async resolveDateRange(startDate?: string, endDate?: string) {
+    const tzNow = getNowInTimezone('America/Sao_Paulo');
+    const [curYear, curMonth] = tzNow.dateStr.split('-').map(Number);
+    const start = startDate
+      ? getDateAtTimeInTimezone(startDate, '00:00')
+      : getDateAtTimeInTimezone(`${curYear}-${String(curMonth).padStart(2, '0')}-01`, '00:00');
+    const end = endDate
+      ? new Date(getDateAtTimeInTimezone(endDate, '00:00').getTime() + 24 * 60 * 60 * 1000 - 1)
+      : new Date(getDateAtTimeInTimezone(tzNow.dateStr, '00:00').getTime() + 24 * 60 * 60 * 1000 - 1);
+
+    const rangeDays = Math.round((end.getTime() - start.getTime()) / (24 * 60 * 60 * 1000)) + 1;
+    if (rangeDays > 93) {
+      throw new BadRequestException('O período máximo para consulta é de 3 meses.');
+    }
+    return {
+      start,
+      end,
+      startStr: start.toISOString().split('T')[0],
+      endStr: end.toISOString().split('T')[0],
+    };
+  }
+
+  /* Agrega atendimentos por plantão x tipo (vez/agendamento/retorno) dentro do período. */
+  private async computeAttendanceSummary(tenantId: string, range: { start: Date; end: Date }, boothId?: string) {
+    const qb = this.attendanceRepository
+      .createQueryBuilder('ar')
+      .select('ar.booth_id', 'boothId')
+      .addSelect('ar.tipo', 'tipo')
+      .addSelect('COUNT(*)', 'total')
+      .where('ar.tenant_id = :tenantId', { tenantId })
+      .andWhere('ar.attended_at BETWEEN :start AND :end', { start: range.start, end: range.end })
+      .groupBy('ar.booth_id')
+      .addGroupBy('ar.tipo');
+    if (boothId) qb.andWhere('ar.booth_id = :boothId', { boothId });
+
+    const rows = (await qb.getRawMany()) as Array<{ boothId: string; tipo: string; total: string }>;
+
+    const booths = await this.boothRepository.find({
+      where: { tenant_id: tenantId, lifecycle_status: 'published' },
+      order: { name: 'ASC' },
+    });
+    const nameMap = new Map(booths.map((b) => [b.id, b.name]));
+
+    const map = new Map<string, { boothId: string; boothName: string; vez: number; agendamento: number; retorno: number; total: number }>();
+    for (const r of rows) {
+      const n = Number(r.total) || 0;
+      const b = map.get(r.boothId) || {
+        boothId: r.boothId,
+        boothName: nameMap.get(r.boothId) || 'Plantão removido',
+        vez: 0,
+        agendamento: 0,
+        retorno: 0,
+        total: 0,
+      };
+      if (r.tipo === 'vez') b.vez += n;
+      else if (r.tipo === 'agendamento') b.agendamento += n;
+      else if (r.tipo === 'retorno') b.retorno += n;
+      b.total += n;
+      map.set(r.boothId, b);
+    }
+
+    let perBooth = [...map.values()].sort((a, b) => a.boothName.localeCompare(b.boothName));
+    if (boothId && !perBooth.some((b) => b.boothId === boothId)) {
+      perBooth.push({ boothId, boothName: nameMap.get(boothId) || 'Plantão removido', vez: 0, agendamento: 0, retorno: 0, total: 0 });
+      perBooth = perBooth.sort((a, b) => a.boothName.localeCompare(b.boothName));
+    }
+
+    const totals = perBooth.reduce(
+      (acc, b) => ({
+        vez: acc.vez + b.vez,
+        agendamento: acc.agendamento + b.agendamento,
+        retorno: acc.retorno + b.retorno,
+        total: acc.total + b.total,
+      }),
+      { vez: 0, agendamento: 0, retorno: 0, total: 0 },
+    );
+
+    return { perBooth, totals };
+  }
+
+  /* Elegíveis para o próximo sábado/domingo POR PLANTÃO (mesma regra do Command Center). */
+  private async computeWeekendEligibilityPerBooth(tenantId: string, booths: Booth[]) {
+    const userRepo = this.presenceRepository.manager.getRepository(User);
+    const brokers = await userRepo.find({
+      where: { tenant_id: tenantId, role: 'corretor_level_3', status: 'active', removed_at: IsNull() },
+      order: { name: 'ASC' },
+    });
+
+    const result: Array<{
+      boothId: string;
+      boothName: string;
+      weekendEnabled: boolean;
+      saturdayRequired: number;
+      sundayRequired: number;
+      saturday: Array<{ brokerId: string; nomeGuerra: string }>;
+      sunday: Array<{ brokerId: string; nomeGuerra: string }>;
+    }> = [];
+
+    for (const booth of booths) {
+      const ruleSet = await this.getRuleSetForBooth(booth);
+      const satReq = ruleSet.saturday_required_periods ?? 5;
+      const sunReq = ruleSet.sunday_required_periods ?? 6;
+      const weekendEnabled = ruleSet.weekend_enabled !== false;
+
+      const saturday: Array<{ brokerId: string; nomeGuerra: string }> = [];
+      const sunday: Array<{ brokerId: string; nomeGuerra: string }> = [];
+      if (weekendEnabled) {
+        for (const broker of brokers) {
+          const metrics = await this.getCurrentWeekPeriodMetrics(broker.id, tenantId, booth.id);
+          const nomeGuerra = broker.nome_guerra || broker.name;
+          if (metrics.validPeriods >= satReq) saturday.push({ brokerId: broker.id, nomeGuerra });
+          if (metrics.validPeriods >= sunReq) sunday.push({ brokerId: broker.id, nomeGuerra });
+        }
+      }
+
+      result.push({
+        boothId: booth.id,
+        boothName: booth.name,
+        weekendEnabled,
+        saturdayRequired: satReq,
+        sundayRequired: sunReq,
+        saturday,
+        sunday,
+      });
+    }
+
+    return result;
+  }
+
+  /* Resumo por plantão x tipo para a Diretoria (cards Vez / Agendamento / Retorno). */
+  async attendanceSummary(
+    actor: { sub: string; role: string },
+    tenantId: string,
+    filters: { startDate?: string; endDate?: string; boothId?: string } = {},
+  ) {
+    if (!(await this.isNovaIdentidade(tenantId))) {
+      throw new ForbiddenException('O resumo de atendimentos é exclusivo da nova identidade.');
+    }
+    const range = await this.resolveDateRange(filters.startDate, filters.endDate);
+    const summary = await this.computeAttendanceSummary(tenantId, range, filters.boothId);
+    return { period: { startDate: range.startStr, endDate: range.endStr }, ...summary };
+  }
+
+  /* RELATÓRIO DA RECEPÇÃO: atendimentos (vez/agendamento/retorno), roletas anteriores e
+     elegíveis para o próximo sábado/domingo, tudo por plantão (período máx. 3 meses). */
+  async receptionReport(
+    actor: { sub: string; role: string },
+    tenantId: string,
+    filters: { startDate?: string; endDate?: string; boothId?: string } = {},
+  ) {
+    if (!(await this.isNovaIdentidade(tenantId))) {
+      throw new ForbiddenException('O relatório da recepção é exclusivo da nova identidade.');
+    }
+    const canView = ['diretoria_level_1', 'platform_admin_level_0', 'rh_level_2', 'rh_level_1', 'recepcao_level_3', 'gerencia_level_2'].includes(actor.role);
+    if (!canView) {
+      throw new ForbiddenException('Acesso restrito ao relatório da recepção.');
+    }
+
+    const range = await this.resolveDateRange(filters.startDate, filters.endDate);
+    const atendimentos = await this.computeAttendanceSummary(tenantId, range, filters.boothId);
+
+    const booths = await this.boothRepository.find({
+      where: { tenant_id: tenantId, lifecycle_status: 'published' },
+      order: { name: 'ASC' },
+    });
+    const filteredBooths = filters.boothId ? booths.filter((b) => b.id === filters.boothId) : booths;
+    const boothNameMap = new Map(booths.map((b) => [b.id, b.name]));
+
+    // Roletas anteriores no período: agrupa presenças por (plantão, roleta)
+    const presenceRows = await this.presenceRepository.find({
+      where: { tenant_id: tenantId, roleta_name: Not(IsNull()) },
+      relations: { broker: true },
+    });
+    const groups = new Map<string, { boothId: string; roletaName: string; drawAt: Date; sequence: Array<Record<string, unknown>> }>();
+    for (const p of presenceRows) {
+      if (!p.check_in_at) continue;
+      const checkIn = new Date(p.check_in_at).getTime();
+      if (checkIn < range.start.getTime() || checkIn > range.end.getTime()) continue;
+      if (filters.boothId && p.booth_id !== filters.boothId) continue;
+
+      const key = `${p.booth_id}::${p.roleta_name}`;
+      const g = groups.get(key) || { boothId: p.booth_id, roletaName: p.roleta_name!, drawAt: p.check_in_at, sequence: [] };
+      if (checkIn < new Date(g.drawAt).getTime()) g.drawAt = p.check_in_at;
+      g.sequence.push({
+        position: p.roleta_position,
+        nomeGuerra: p.broker?.nome_guerra || 'Corretor',
+        entryType: p.roleta_entry_type,
+        attendedAt: p.attended_at,
+        status: p.status,
+      });
+      groups.set(key, g);
+    }
+
+    const roletas = [...groups.values()]
+      .map((g) => ({
+        boothId: g.boothId,
+        boothName: boothNameMap.get(g.boothId) || 'Plantão removido',
+        roletaName: g.roletaName,
+        drawAt: g.drawAt,
+        sequence: [...g.sequence].sort((a, b) => {
+          const ap = (a.position as number | null) ?? Number.MAX_SAFE_INTEGER;
+          const bp = (b.position as number | null) ?? Number.MAX_SAFE_INTEGER;
+          return ap - bp;
+        }),
+      }))
+      .sort((a, b) => new Date(b.drawAt).getTime() - new Date(a.drawAt).getTime())
+      .slice(0, 100);
+
+    const elegiveis = await this.computeWeekendEligibilityPerBooth(tenantId, filteredBooths);
+
+    return {
+      period: { startDate: range.startStr, endDate: range.endStr },
+      atendimentos,
+      roletas,
+      elegiveis,
+    };
+  }
+
+  /* Check-out SOBERANO da Recepção: encerra a presença de qualquer corretor (online/suspenso)
+     que a recepção confirme que não está mais no plantão. Não exige contagem/validação do período:
+     a recepção é a autoridade. O corretor sai da sequência e o próximo sobe automaticamente. */
+  async receptionCheckOut(actor: { sub: string; role: string }, tenantId: string, presenceId: string) {
+    if (!(await this.isNovaIdentidade(tenantId))) {
+      throw new ForbiddenException('O check-out pela recepção é exclusivo da nova identidade.');
+    }
+
+    const presence = await this.presenceRepository.findOne({
+      where: { id: presenceId, tenant_id: tenantId },
+      relations: { broker: true },
+    });
+    if (!presence) throw new NotFoundException('Presença não localizada.');
+
+    const booth = await this.boothRepository.findOne({ where: { id: presence.booth_id, tenant_id: tenantId } });
+    if (!booth) throw new NotFoundException('Plantão não localizado.');
+
+    await this.assertCanOperateBooth(actor, tenantId, booth.id);
+
+    if (presence.status !== 'online' && presence.status !== 'absent') {
+      throw new BadRequestException('Este corretor não possui presença ativa para encerrar.');
+    }
+
+    const now = new Date();
+    const countStart = presence.validation_starts_at || presence.check_in_at;
+    const countEnd = presence.status === 'absent' ? presence.last_confirmed_at || presence.check_in_at : now;
+    const elapsedMinutes = Math.max(0, Math.floor((countEnd.getTime() - countStart.getTime()) / 1000 / 60));
+
+    presence.check_out_at = now;
+    presence.accumulated_minutes = elapsedMinutes;
+    presence.status = this.resolveFinalStatus(presence, elapsedMinutes);
+    const saved = await this.presenceRepository.save(presence);
+
+    const leftoverPings = await this.logRepository.find({ where: { presence_id: presence.id, response_status: 'pending' } });
+    for (const leftover of leftoverPings) {
+      leftover.response_status = 'no_response';
+      leftover.responded_at = now;
+      await this.logRepository.save(leftover);
+    }
+
+    this.realtimeService.publish({
+      eventType: 'presence.checked_out',
+      tenantId,
+      aggregateId: saved.id,
+      payload: {
+        brokerId: saved.broker_id,
+        boothId: saved.booth_id,
+        status: saved.status,
+        accumulatedMinutes: saved.accumulated_minutes,
+        byReception: true,
+      },
+    });
+
+    await this.checkAndNotifyLowCoverage(saved.booth_id, tenantId);
+
+    return {
+      message: presence.roleta_entry_type === 'fora_janela'
+        ? 'Check-out realizado pela recepção (corretor fora da janela). Período não será validado.'
+        : elapsedMinutes >= saved.minimum_period_minutes
+        ? 'Check-out realizado pela recepção. Período contabilizado.'
+        : 'Check-out realizado pela recepção. Período invalidado por não atingir o mínimo.',
+      presenceId: saved.id,
+      brokerId: saved.broker_id,
+      checkInAt: saved.check_in_at,
+      checkOutAt: saved.check_out_at,
+      totalMinutes: saved.accumulated_minutes,
+      status: saved.status,
+      byReception: true,
     };
   }
 

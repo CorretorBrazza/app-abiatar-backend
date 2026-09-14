@@ -12,6 +12,7 @@ import { BoothSpecialSchedule } from '../booths/entities/booth-special-schedule.
 import { OnboardingLink } from '../users/entities/onboarding-link.entity';
 import { Presence } from '../presences/entities/presence.entity';
 import { AttendanceRecord } from '../presences/entities/attendance-record.entity';
+import { CrmDelivery } from '../presences/entities/crm-delivery.entity';
 import { DeadManLog } from '../presences/entities/dead-man-log.entity';
 import { Message } from '../messages/entities/message.entity';
 import { MessageRecipient } from '../messages/entities/message-recipient.entity';
@@ -35,6 +36,7 @@ import { AddPresenceAttendanceQueue1787000014000 } from './migrations/1787000014
 import { AddDeviceTypeToPushTokens1787000015000 } from './migrations/1787000015000-AddDeviceTypeToPushTokens';
 import { AddSessionVersionByDeviceType1787000016000 } from './migrations/1787000016000-AddSessionVersionByDeviceType';
 import { AddAttendanceRecordsAndVezRotation1787000018000 } from './migrations/1787000018000-AddAttendanceRecordsAndVezRotation';
+import { AddCrmDeliveriesAndAttendanceTipo1787000019000 } from './migrations/1787000019000-AddCrmDeliveriesAndAttendanceTipo';
 
 export const AppDataSource = new DataSource({
   type: 'postgres',
@@ -51,6 +53,7 @@ export const AppDataSource = new DataSource({
     OnboardingLink,
     Presence,
     AttendanceRecord,
+    CrmDelivery,
     DeadManLog,
     Message,
     MessageRecipient,
@@ -76,6 +79,7 @@ export const AppDataSource = new DataSource({
     AddDeviceTypeToPushTokens1787000015000,
     AddSessionVersionByDeviceType1787000016000,
     AddAttendanceRecordsAndVezRotation1787000018000,
+    AddCrmDeliveriesAndAttendanceTipo1787000019000,
   ],
   migrationsRun: false,
   migrationsTransactionMode: 'each',

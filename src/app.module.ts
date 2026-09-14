@@ -19,6 +19,7 @@ import { OnboardingLink } from './users/entities/onboarding-link.entity';
 import { UsersModule } from './users/users.module';
 import { Presence } from './presences/entities/presence.entity';
 import { AttendanceRecord } from './presences/entities/attendance-record.entity';
+import { CrmDelivery } from './presences/entities/crm-delivery.entity';
 import { DeadManLog } from './presences/entities/dead-man-log.entity';
 import { PresencesModule } from './presences/presences.module';
 import { Message } from './messages/entities/message.entity';
@@ -53,6 +54,7 @@ import { DevModule } from './dev/dev.module';
         OnboardingLink, 
         Presence, 
         AttendanceRecord,
+        CrmDelivery,
         DeadManLog, 
         Message,
         MessageRecipient,

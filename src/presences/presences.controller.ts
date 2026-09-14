@@ -205,15 +205,17 @@ export class PresencesController {
   }
 
   // Atendimento SIMPLES (novo fluxo): a Recepção convoca qualquer corretor da fila (Aviso + Registro,
-  // sem rotação de posição)
+  // sem rotação de posição). O tipo discrimina AGENDAMENTO ou RETORNO; dados de cliente (opcionais)
+  // seguem apenas para o CRM via API (não são persistidos).
   @Post('attend/:presenceId')
   @UseGuards(JwtAuthGuard)
   async attendPresence(
     @Param('presenceId') presenceId: string,
+    @Body() dto: { tipo?: string; cliente?: { nome?: string; telefone?: string; email?: string } },
     @CurrentUser() currentUser: { sub: string; role: string },
     @TenantId() tenantId: string,
   ) {
-    return this.presencesService.attendPresence(currentUser, tenantId, presenceId);
+    return this.presencesService.attendPresence(currentUser, tenantId, presenceId, dto ?? {});
   }
 
   // Atendimento VEZ: somente para o PRIMEIRO da fila da roleta. Após atender, retorna ao final
@@ -221,10 +223,22 @@ export class PresencesController {
   @UseGuards(JwtAuthGuard)
   async attendVez(
     @Param('presenceId') presenceId: string,
+    @Body() dto: { cliente?: { nome?: string; telefone?: string; email?: string } },
     @CurrentUser() currentUser: { sub: string; role: string },
     @TenantId() tenantId: string,
   ) {
-    return this.presencesService.attendVez(currentUser, tenantId, presenceId);
+    return this.presencesService.attendVez(currentUser, tenantId, presenceId, dto ?? {});
+  }
+
+  // Check-out SOBERANO da Recepção: a recepção encerra a presença quando o corretor não está mais no plantão
+  @Post('reception-checkout/:presenceId')
+  @UseGuards(JwtAuthGuard)
+  async receptionCheckOut(
+    @Param('presenceId') presenceId: string,
+    @CurrentUser() currentUser: { sub: string; role: string },
+    @TenantId() tenantId: string,
+  ) {
+    return this.presencesService.receptionCheckOut(currentUser, tenantId, presenceId);
   }
 
   // Registro de TODOS os atendimentos para análise posterior (Diretoria/RH/Recepção/Corretor)
@@ -237,8 +251,36 @@ export class PresencesController {
     @Query('endDate') endDate?: string,
     @Query('boothId') boothId?: string,
     @Query('brokerId') brokerId?: string,
+    @Query('tipo') tipo?: string,
   ) {
-    return this.presencesService.listAttendances(currentUser, tenantId, { startDate, endDate, boothId, brokerId });
+    return this.presencesService.listAttendances(currentUser, tenantId, { startDate, endDate, boothId, brokerId, tipo });
+  }
+
+  // Resumo de atendimentos por plantão x tipo (cards Vez/Agendamento/Retorno da Diretoria)
+  @Get('reports/attendance-summary')
+  @UseGuards(JwtAuthGuard)
+  async attendanceSummary(
+    @CurrentUser() currentUser: { sub: string; role: string },
+    @TenantId() tenantId: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Query('boothId') boothId?: string,
+  ) {
+    return this.presencesService.attendanceSummary(currentUser, tenantId, { startDate, endDate, boothId });
+  }
+
+  // RELATÓRIO DA RECEPÇÃO: atendimentos (vez/agendamento/retorno) + roletas anteriores +
+  // elegíveis próximo sábado/domingo, por plantão
+  @Get('reports/reception')
+  @UseGuards(JwtAuthGuard)
+  async receptionReport(
+    @CurrentUser() currentUser: { sub: string; role: string },
+    @TenantId() tenantId: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Query('boothId') boothId?: string,
+  ) {
+    return this.presencesService.receptionReport(currentUser, tenantId, { startDate, endDate, boothId });
   }
 
   // Fila da roleta do momento para a Recepção acompanhar os plantões atribuídos

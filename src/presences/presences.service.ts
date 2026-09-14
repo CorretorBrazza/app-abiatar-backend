@@ -79,8 +79,9 @@ export class PresencesService {
   private async isNovaIdentidade(tenantId: string): Promise<boolean> {
     try {
       const tenant = await this.tenantRepository.findOne({ where: { id: tenantId } });
-      return tenant?.settings?.features?.nova_identidade === true;
-    } catch (error) {
+      const features = tenant?.settings?.features as { nova_identidade?: boolean } | undefined;
+      return features?.nova_identidade === true;
+    } catch {
       return false;
     }
   }
@@ -2599,7 +2600,7 @@ export class PresencesService {
       order: { check_in_at: 'ASC' },
     });
 
-    const queueResponse: any = {
+    return {
       boothId: booth.id,
       boothName: booth.name,
       currentRoleta: {
@@ -2608,6 +2609,7 @@ export class PresencesService {
         phase: matchingRoleta?.isPontual ? 'aguardando_sorteio' : 'apos_sorteio',
       },
       queue,
+      ...(novaIdentidade ? { outOfWindow } : {}),
       awaitingRevalidation: awaitingRevalidation.map((p) => ({
         presenceId: p.id,
         brokerId: p.broker_id,
@@ -2616,8 +2618,6 @@ export class PresencesService {
         checkInAt: p.check_in_at,
       })),
     };
-    if (novaIdentidade) queueResponse.outOfWindow = outOfWindow;
-    return queueResponse;
   }
 
   // 13. RELATÓRIO EXECUTIVO EM TEMPO REAL: Torre de Controle da Diretoria

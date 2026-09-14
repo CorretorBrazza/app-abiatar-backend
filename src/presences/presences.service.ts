@@ -2773,9 +2773,12 @@ export class PresencesService {
     const boothNameMap = new Map(booths.map((b) => [b.id, b.name]));
 
     // Roletas anteriores no período: agrupa presenças por (plantão, roleta)
+    // Consulta já limitada ao período (a filtragem anterior por JS carregava TODAS as presenças).
     const presenceRows = await this.presenceRepository.find({
-      where: { tenant_id: tenantId, roleta_name: Not(IsNull()) },
+      where: { tenant_id: tenantId, roleta_name: Not(IsNull()), check_in_at: Between(range.start, range.end) },
       relations: { broker: true },
+      order: { check_in_at: 'DESC' },
+      take: 2000,
     });
     const groups = new Map<string, { boothId: string; roletaName: string; drawAt: Date; sequence: Array<Record<string, unknown>> }>();
     for (const p of presenceRows) {

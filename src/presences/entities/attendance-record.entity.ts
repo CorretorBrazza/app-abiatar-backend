@@ -14,7 +14,7 @@ export class AttendanceRecord {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column()
+  @Column({ type: 'uuid' })
   tenant_id: string;
 
   @ManyToOne(() => Tenant, { onDelete: 'CASCADE' })
@@ -24,14 +24,14 @@ export class AttendanceRecord {
   @Column({ type: 'uuid', nullable: true })
   presence_id: string | null;
 
-  @Column()
+  @Column({ type: 'uuid' })
   broker_id: string;
 
   @ManyToOne(() => User, { onDelete: 'CASCADE' })
   @JoinColumn({ name: 'broker_id' })
   broker: User;
 
-  @Column()
+  @Column({ type: 'uuid' })
   booth_id: string;
 
   @ManyToOne(() => Booth, { onDelete: 'CASCADE' })

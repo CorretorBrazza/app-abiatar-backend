@@ -15,6 +15,7 @@ import { MessageRecipient } from '../messages/entities/message-recipient.entity'
 import { BoothReceptionist } from '../booths/entities/booth-receptionist.entity';
 import { User } from '../users/user.entity';
 import { AuthModule } from '../auth/auth.module';
+import { Tenant } from '../tenants/tenant.entity';
 
 @Module({
   imports: [
@@ -29,7 +30,8 @@ import { AuthModule } from '../auth/auth.module';
       DeadManLog, 
       Message,
       MessageRecipient,
-      BoothReceptionist
+      BoothReceptionist,
+      Tenant
     ]),
     AuthModule,
   ],

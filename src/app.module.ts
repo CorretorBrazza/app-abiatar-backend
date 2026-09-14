@@ -18,6 +18,7 @@ import { BoothsModule } from './booths/booths.module';
 import { OnboardingLink } from './users/entities/onboarding-link.entity';
 import { UsersModule } from './users/users.module';
 import { Presence } from './presences/entities/presence.entity';
+import { AttendanceRecord } from './presences/entities/attendance-record.entity';
 import { DeadManLog } from './presences/entities/dead-man-log.entity';
 import { PresencesModule } from './presences/presences.module';
 import { Message } from './messages/entities/message.entity';
@@ -51,6 +52,7 @@ import { DevModule } from './dev/dev.module';
         BoothSpecialSchedule,
         OnboardingLink, 
         Presence, 
+        AttendanceRecord,
         DeadManLog, 
         Message,
         MessageRecipient,

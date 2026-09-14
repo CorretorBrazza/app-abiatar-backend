@@ -5,6 +5,7 @@ import { Cron, CronExpression } from '@nestjs/schedule'; // Importa o decorador 
 
 import { Presence } from './entities/presence.entity';
 import { AttendanceRecord } from './entities/attendance-record.entity';
+import { Tenant } from '../tenants/tenant.entity';
 import { User } from '../users/user.entity';
 import { Booth } from '../booths/entities/booth.entity';
 import { BoothReceptionist } from '../booths/entities/booth-receptionist.entity';
@@ -29,6 +30,9 @@ export class PresencesService {
 
     @InjectRepository(User)
     private userRepository: Repository<User>,
+
+    @InjectRepository(Tenant)
+    private tenantRepository: Repository<Tenant>,
 
     @InjectRepository(Booth)
     private boothRepository: Repository<Booth>,
@@ -67,6 +71,18 @@ export class PresencesService {
       return Math.max(0, Math.floor((now.getTime() - new Date(start).getTime()) / 1000 / 60));
     }
     return p.accumulated_minutes || 0;
+  }
+
+  /* Estabelece se o tenant usa a "nova identidade" (features.nova_identidade = true).
+     O fluxo novo de atendimento (simples/vez, fora da janela, registro de atendimentos)
+     só vale para esses tenants; os demais continuam com o comportamento legado. */
+  private async isNovaIdentidade(tenantId: string): Promise<boolean> {
+    try {
+      const tenant = await this.tenantRepository.findOne({ where: { id: tenantId } });
+      return tenant?.settings?.features?.nova_identidade === true;
+    } catch (error) {
+      return false;
+    }
   }
 
   /* Status final de um período. Presenças fora da janela registram presença/atendimento,
@@ -438,22 +454,59 @@ export class PresencesService {
     let assignedPosition: number | null = null;
     let assignedDrawTimeStr = '09:01';
 
-    // NOVA REGRA: corretor registrado pode fazer check-in a qualquer momento em qualquer plantão.
-    // Fora da janela de validade (sem roleta aberta) OU com estágio não liberado aqui = check-in
-    // "fora da janela": REGISTRA a presença (aparece na fila/históricos e pode ser atendido pela
-    // Recepção), mas NÃO valida o período nem entra na sequência da roleta.
+    // NOVA REGRA (nova identidade): corretor registrado pode fazer check-in a qualquer momento em
+    // qualquer plantão. Fora da janela de validade (sem roleta aberta) OU com estágio não liberado
+    // aqui = check-in "fora da janela": REGISTRA a presença (aparece na fila/históricos e pode ser
+    // atendido pela Recepção), mas NÃO valida o período nem entra na sequência da roleta.
+    // Comportamento legado (flag desligado): continua REJEITANDO check-in fora da janela/estágio.
+    const novaIdentidade = await this.isNovaIdentidade(tenantId);
     const isOutOfWindow = !matchingRoleta || !stageAllowed;
 
-    if (isOutOfWindow) {
-      assignedEntryType = 'fora_janela';
-      assignedRoletaName = matchingRoleta?.name || null;
-      assignedValidationStartsAt = null; // Sem âncora de validação → sempre finaliza invalidado
-      assignedDrawTimeStr = matchingRoleta?.drawTimeFormatted || '';
-    } else {
+    if (novaIdentidade) {
+      if (isOutOfWindow) {
+        assignedEntryType = 'fora_janela';
+        assignedRoletaName = matchingRoleta?.name || null;
+        assignedValidationStartsAt = null; // Sem âncora de validação → sempre finaliza invalidado
+        assignedDrawTimeStr = matchingRoleta?.drawTimeFormatted || '';
+      } else {
+        assignedRoletaName = matchingRoleta!.name;
+        assignedDrawTimeStr = matchingRoleta!.drawTimeFormatted;
+
+        // Âncora oficial: sempre o horário cheio cadastrado da roleta, nunca o timestamp real do check-in.
+        const roletaAnchor = getDateAtTimeInTimezone(
+          tzNowForRoleta.dateStr,
+          minutesToTimeString(matchingRoleta!.roletaMinutes),
+        );
+
+        if (matchingRoleta!.isPontual) {
+          assignedEntryType = 'pontual';
+          assignedValidationStartsAt = roletaAnchor;
+          assignedPosition = null; // Fica aguardando o sorteio automático exatamente às 09:01 / 13:31 / 14:01
+        } else {
+          assignedEntryType = 'pos_barra';
+          assignedValidationStartsAt = roletaAnchor; // Mesma âncora do pontual: início sempre no horário cheio da roleta
+
+          // Pós-Barra entra automaticamente no final da fila.
+          const existingInBooth = await this.presenceRepository.find({
+            where: {
+              booth_id: dto.boothId,
+              tenant_id: tenantId,
+              status: 'online',
+              roleta_name: assignedRoletaName,
+            },
+          });
+          const positionedCount = existingInBooth.filter((p) => p.roleta_position !== null).length;
+          const unplacedPontualCount = existingInBooth.filter(
+            (p) => p.roleta_position === null && p.roleta_entry_type === 'pontual',
+          ).length;
+          assignedPosition = positionedCount + unplacedPontualCount + 1;
+        }
+      }
+    } else if (!isOutOfWindow) {
+      // Legado: mesma trava estrita de janela + estágio liberado para aceitar o check-in.
       assignedRoletaName = matchingRoleta!.name;
       assignedDrawTimeStr = matchingRoleta!.drawTimeFormatted;
 
-      // Âncora oficial: sempre o horário cheio cadastrado da roleta, nunca o timestamp real do check-in.
       const roletaAnchor = getDateAtTimeInTimezone(
         tzNowForRoleta.dateStr,
         minutesToTimeString(matchingRoleta!.roletaMinutes),
@@ -467,10 +520,6 @@ export class PresencesService {
         assignedEntryType = 'pos_barra';
         assignedValidationStartsAt = roletaAnchor; // Mesma âncora do pontual: início sempre no horário cheio da roleta
 
-        // Pós-Barra entra automaticamente no final da fila.
-        // IMPORTANTE: conta também os pontuais sem posição (ainda aguardando sorteio) para
-        // garantir que o pós-barra fique SEMPRE depois de todos os pontuais, mesmo que o
-        // processRoletaDraws() ainda não tenha executado para esta roleta.
         const existingInBooth = await this.presenceRepository.find({
           where: {
             booth_id: dto.boothId,
@@ -485,6 +534,24 @@ export class PresencesService {
         ).length;
         assignedPosition = positionedCount + unplacedPontualCount + 1;
       }
+    } else {
+      // Legado: fora da janela ou com estágio bloqueado → REJEITA (comportamento original).
+      if (!matchingRoleta) {
+        const allowedWindows = roletaTimes.map((r) => {
+          const roletaMin = timeStringToMinutes(r.time);
+          const earlyStr = minutesToTimeString(roletaMin - earlyMinutes);
+          const drawStr = minutesToTimeString(roletaMin + 1);
+          const endStr = minutesToTimeString(roletaMin + posBarraMinutes);
+          return `${r.name} (Check-in das ${earlyStr} às ${endStr} · Sorteio às ${drawStr})`;
+        }).join(' | ');
+
+        throw new BadRequestException(
+          `Check-in fora do horário permitido para o plantão '${booth.name}'. Janelas de Check-in hoje: ${allowedWindows}.`,
+        );
+      }
+      throw new BadRequestException(
+        `Check-in bloqueado. Este plantão não está liberado para corretores em fase '${brokerUser.broker_stage || 'treinamento'}'. Fases liberadas: ${allowedStages.join(', ')}.`,
+      );
     }
 
     const presence = this.presenceRepository.create({
@@ -795,7 +862,8 @@ export class PresencesService {
     let boothQueue: any[] = [];
     let myEffectivePosition: number | null = null;
     if (activePresence && activePresence.roleta_name && (activePresence.roleta_position || activePresence.roleta_entry_type === 'pos_barra')) {
-      const queue = await this.getEffectiveQueue(activePresence.booth_id, tenantId, activePresence.roleta_name);
+      const novaIdentidade = await this.isNovaIdentidade(tenantId);
+      const queue = await this.getEffectiveQueue(activePresence.booth_id, tenantId, activePresence.roleta_name, novaIdentidade);
       boothQueue = queue.map((p) => ({
         ...p,
         roletaPosition: p.effectivePosition,
@@ -1598,138 +1666,210 @@ export class PresencesService {
     });
     const managerMap = new Map(managers.map((m) => [m.id, m.nome_guerra || m.name]));
 
-    // REGISTROS DE ATENDIMENTO (novo fluxo): todos os atendimentos vez/simples da Recepção.
-    // Na Recepção ("Meu histórico") aparecem os atendimentos feitos pela própria recepção;
-    // nos demais perfis, os atendimentos feitos AO corretor consultado.
-    const attendanceRecords = isReceptionSelf
-      ? await this.attendanceRepository.find({
-          where: { tenant_id: tenantId, attended_by_user_id: brokerId, attended_at: Between(startDate, endDate) },
-          relations: { booth: true },
-          order: { attended_at: 'ASC' },
-        })
-      : await this.attendanceRepository.find({
-          where: { tenant_id: tenantId, broker_id: brokerId, attended_at: Between(startDate, endDate) },
-          relations: { booth: true },
-          order: { attended_at: 'ASC' },
-        });
+    // Nova identidade: agrega os registros de atendimento (vezes/simples da Recepção) ao histórico.
+    // Legado: mantém o contrato original (somente presenças, sem campos de atendimento).
+    const novaIdentidade = await this.isNovaIdentidade(tenantId);
 
-    const attendanceSummary = {
-      total: attendanceRecords.length,
-      vezCount: attendanceRecords.filter((r) => r.tipo === 'vez').length,
-      simplesCount: attendanceRecords.filter((r) => r.tipo === 'simples').length,
+    const brokerInfo = {
+      id: broker.id,
+      name: broker.name,
+      nomeGuerra: broker.nome_guerra || broker.name,
+      creci: broker.creci || null,
+      brokerStage: broker.broker_stage || 'corretor_creci',
+      managerId: broker.manager_id,
+      managerName: broker.manager_id ? (managerMap.get(broker.manager_id) || 'Sem Gerente') : 'Sem Gerente',
+      status: broker.status,
+      approvedByHr: broker.approved_by_hr,
+      carenciaEndsAt: broker.carencia_ends_at,
+      stageExpiresAt: broker.stage_expires_at,
+      createdAt: broker.created_at,
+      lastCheckinAt: broker.last_checkin_at,
+    };
+    const periodInfo = {
+      startDate: startDate.toISOString().split('T')[0],
+      endDate: endDate.toISOString().split('T')[0],
     };
 
-    const attendances = attendanceRecords.map((r) => ({
-      id: r.id,
-      brokerId: r.broker_id,
-      boothId: r.booth_id,
-      boothName: r.booth?.name || 'Plantão removido',
-      tipo: r.tipo,
-      inSequence: r.in_sequence,
-      attendedAt: r.attended_at,
-      attendedByUserId: r.attended_by_user_id,
-    }));
+    if (novaIdentidade) {
+      // REGISTROS DE ATENDIMENTO (novo fluxo): todos os atendimentos vez/simples da Recepção.
+      // Na Recepção ("Meu histórico") aparecem os atendimentos feitos pela própria recepção;
+      // nos demais perfis, os atendimentos feitos AO corretor consultado.
+      const attendanceRecords = isReceptionSelf
+        ? await this.attendanceRepository.find({
+            where: { tenant_id: tenantId, attended_by_user_id: brokerId, attended_at: Between(startDate, endDate) },
+            relations: { booth: true },
+            order: { attended_at: 'ASC' },
+          })
+        : await this.attendanceRepository.find({
+            where: { tenant_id: tenantId, broker_id: brokerId, attended_at: Between(startDate, endDate) },
+            relations: { booth: true },
+            order: { attended_at: 'ASC' },
+          });
 
-    const totalCheckIns = isReceptionSelf ? attendanceRecords.length : presences.length;
-    const foraJanelaCount = presences.filter((p) => p.roleta_entry_type === 'fora_janela').length;
-    const completedCount = isReceptionSelf ? attendanceSummary.vezCount : presences.filter((p) => p.status === 'completed').length;
-    const invalidatedCount = isReceptionSelf ? attendanceSummary.simplesCount : presences.filter((p) => p.status === 'invalidated').length;
-    const onlineCount = isReceptionSelf ? 0 : presences.filter((p) => p.status === 'online').length;
-    const pontualCount = isReceptionSelf ? attendanceSummary.vezCount : presences.filter((p) => p.roleta_entry_type === 'pontual').length;
-    const posBarraCount = isReceptionSelf ? attendanceSummary.simplesCount : presences.filter((p) => p.roleta_entry_type === 'pos_barra').length;
-    const totalMinutes = isReceptionSelf
-      ? 0
-      : presences
-          .filter((p) => p.status !== 'invalidated')
-          .reduce((acc, p) => acc + this.getEffectiveMinutes(p, now), 0);
-    const hours = Math.floor(totalMinutes / 60);
-    const minutes = totalMinutes % 60;
-    const punctualityRate = isReceptionSelf ? 0 : totalCheckIns > 0 ? Math.round((pontualCount / totalCheckIns) * 100) : 100;
-    const validationRate = isReceptionSelf ? 0 : completedCount + invalidatedCount > 0
-      ? Math.round((completedCount / (completedCount + invalidatedCount)) * 100)
-      : 100;
-    const activeDays = new Set(
-      isReceptionSelf
-        ? attendanceRecords.map((r) => this.formatDateBR(r.attended_at))
-        : presences.map((p) => this.formatDateBR(p.check_in_at)),
-    ).size;
+      const attendanceSummary = {
+        total: attendanceRecords.length,
+        vezCount: attendanceRecords.filter((r) => r.tipo === 'vez').length,
+        simplesCount: attendanceRecords.filter((r) => r.tipo === 'simples').length,
+      };
 
-    const dayGroups = new Map<string, any[]>();
-    const pushEntry = (day: string, entry: any) => {
-      const list = dayGroups.get(day) || [];
-      list.push(entry);
-      dayGroups.set(day, list);
-    };
+      const attendances = attendanceRecords.map((r) => ({
+        id: r.id,
+        brokerId: r.broker_id,
+        boothId: r.booth_id,
+        boothName: r.booth?.name || 'Plantão removido',
+        tipo: r.tipo,
+        inSequence: r.in_sequence,
+        attendedAt: r.attended_at,
+        attendedByUserId: r.attended_by_user_id,
+      }));
 
-    if (isReceptionSelf) {
-      for (const r of attendanceRecords) {
-        pushEntry(this.formatDateBR(r.attended_at), {
-          id: `att_${r.id}`,
-          boothId: r.booth_id,
-          boothName: r.booth?.name || 'Plantão removido',
-          checkInAt: r.attended_at,
-          checkOutAt: null,
-          lastConfirmedAt: null,
-          accumulatedMinutes: 0,
-          hoursFormatted: '0h 0m',
-          roletaName: r.tipo === 'vez' ? 'Atendimento vez' : 'Atendimento',
-          roletaEntryType: r.tipo,
-          roletaPosition: null,
-          status: 'attended',
-          attendedByUserId: r.attended_by_user_id,
-          tipoAtendimento: r.tipo,
-        });
+      const totalCheckIns = isReceptionSelf ? attendanceRecords.length : presences.length;
+      const foraJanelaCount = presences.filter((p) => p.roleta_entry_type === 'fora_janela').length;
+      const completedCount = isReceptionSelf ? attendanceSummary.vezCount : presences.filter((p) => p.status === 'completed').length;
+      const invalidatedCount = isReceptionSelf ? attendanceSummary.simplesCount : presences.filter((p) => p.status === 'invalidated').length;
+      const onlineCount = isReceptionSelf ? 0 : presences.filter((p) => p.status === 'online').length;
+      const pontualCount = isReceptionSelf ? attendanceSummary.vezCount : presences.filter((p) => p.roleta_entry_type === 'pontual').length;
+      const posBarraCount = isReceptionSelf ? attendanceSummary.simplesCount : presences.filter((p) => p.roleta_entry_type === 'pos_barra').length;
+      const totalMinutes = isReceptionSelf
+        ? 0
+        : presences
+            .filter((p) => p.status !== 'invalidated')
+            .reduce((acc, p) => acc + this.getEffectiveMinutes(p, now), 0);
+      const hours = Math.floor(totalMinutes / 60);
+      const minutes = totalMinutes % 60;
+      const punctualityRate = isReceptionSelf ? 0 : totalCheckIns > 0 ? Math.round((pontualCount / totalCheckIns) * 100) : 100;
+      const validationRate = isReceptionSelf ? 0 : completedCount + invalidatedCount > 0
+        ? Math.round((completedCount / (completedCount + invalidatedCount)) * 100)
+        : 100;
+      const activeDays = new Set(
+        isReceptionSelf
+          ? attendanceRecords.map((r) => this.formatDateBR(r.attended_at))
+          : presences.map((p) => this.formatDateBR(p.check_in_at)),
+      ).size;
+
+      const dayGroups = new Map<string, any[]>();
+      const pushEntry = (day: string, entry: any) => {
+        const list = dayGroups.get(day) || [];
+        list.push(entry);
+        dayGroups.set(day, list);
+      };
+
+      if (isReceptionSelf) {
+        for (const r of attendanceRecords) {
+          pushEntry(this.formatDateBR(r.attended_at), {
+            id: `att_${r.id}`,
+            boothId: r.booth_id,
+            boothName: r.booth?.name || 'Plantão removido',
+            checkInAt: r.attended_at,
+            checkOutAt: null,
+            lastConfirmedAt: null,
+            accumulatedMinutes: 0,
+            hoursFormatted: '0h 0m',
+            roletaName: r.tipo === 'vez' ? 'Atendimento vez' : 'Atendimento',
+            roletaEntryType: r.tipo,
+            roletaPosition: null,
+            status: 'attended',
+            attendedByUserId: r.attended_by_user_id,
+            tipoAtendimento: r.tipo,
+          });
+        }
+      } else {
+        for (const p of presences) {
+          const day = this.formatDateBR(p.check_in_at);
+          const pMinutes = this.getEffectiveMinutes(p, now);
+          const pHours = Math.floor(pMinutes / 60);
+          const pMin = pMinutes % 60;
+          pushEntry(day, {
+            id: p.id,
+            boothId: p.booth_id,
+            boothName: boothMap.get(p.booth_id) || 'Plantão removido',
+            checkInAt: p.check_in_at,
+            checkOutAt: p.check_out_at,
+            lastConfirmedAt: p.last_confirmed_at,
+            accumulatedMinutes: p.status === 'invalidated' ? 0 : pMinutes,
+            hoursFormatted: p.status === 'invalidated' ? '0h 0m' : `${pHours}h ${pMin}m`,
+            roletaName: p.roleta_name || '—',
+            roletaEntryType: p.roleta_entry_type || '—',
+            roletaPosition: p.roleta_position ?? null,
+            status: p.status,
+            attendedByUserId: p.attended_by_user_id || null,
+            tipoAtendimento: null,
+            foraDaJanela: (p.roleta_entry_type as string) === 'fora_janela',
+          });
+        }
       }
-    } else {
-      for (const p of presences) {
-        const day = this.formatDateBR(p.check_in_at);
-        const pMinutes = this.getEffectiveMinutes(p, now);
-        const pHours = Math.floor(pMinutes / 60);
-        const pMin = pMinutes % 60;
-        pushEntry(day, {
-          id: p.id,
-          boothId: p.booth_id,
-          boothName: boothMap.get(p.booth_id) || 'Plantão removido',
-          checkInAt: p.check_in_at,
-          checkOutAt: p.check_out_at,
-          lastConfirmedAt: p.last_confirmed_at,
-          accumulatedMinutes: p.status === 'invalidated' ? 0 : pMinutes,
-          hoursFormatted: p.status === 'invalidated' ? '0h 0m' : `${pHours}h ${pMin}m`,
-          roletaName: p.roleta_name || '—',
-          roletaEntryType: p.roleta_entry_type || '—',
-          roletaPosition: p.roleta_position ?? null,
-          status: p.status,
-          attendedByUserId: p.attended_by_user_id || null,
-          tipoAtendimento: null,
-          foraDaJanela: (p.roleta_entry_type as string) === 'fora_janela',
-        });
-      }
+
+      return {
+        broker: brokerInfo,
+        period: periodInfo,
+        summary: {
+          totalCheckIns,
+          completedCount,
+          invalidatedCount,
+          onlineCount,
+          pontualCount,
+          posBarraCount,
+          foraJanelaCount,
+          totalMinutes,
+          totalHoursFormatted: `${hours}h ${minutes}m`,
+          punctualityRate,
+          validationRate,
+          activeDays,
+        },
+        attendanceSummary,
+        attendances,
+        days: Array.from(dayGroups.entries())
+          .map(([date, entries]) => ({ date, entries }))
+          .sort((a, b) => (a.date < b.date ? -1 : 1)),
+      };
     }
 
-    const days = Array.from(dayGroups.entries())
-      .map(([date, entries]) => ({ date, entries }))
-      .sort((a, b) => (a.date < b.date ? -1 : 1));
+    // ===== FLUXO LEGADO =====
+    const totalCheckIns = presences.length;
+    const completedCount = presences.filter((p) => p.status === 'completed').length;
+    const invalidatedCount = presences.filter((p) => p.status === 'invalidated').length;
+    const onlineCount = presences.filter((p) => p.status === 'online').length;
+    const pontualCount = presences.filter((p) => p.roleta_entry_type === 'pontual').length;
+    const posBarraCount = presences.filter((p) => p.roleta_entry_type === 'pos_barra').length;
+    const totalMinutes = presences
+      .filter((p) => p.status !== 'invalidated')
+      .reduce((acc, p) => acc + this.getEffectiveMinutes(p, now), 0);
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    const punctualityRate = totalCheckIns > 0 ? Math.round((pontualCount / totalCheckIns) * 100) : 100;
+    const validationRate = completedCount + invalidatedCount > 0
+      ? Math.round((completedCount / (completedCount + invalidatedCount)) * 100)
+      : 100;
+    const activeDays = new Set(presences.map((p) => this.formatDateBR(p.check_in_at))).size;
+
+    const legacyDayGroups = new Map<string, any[]>();
+    for (const p of presences) {
+      const day = this.formatDateBR(p.check_in_at);
+      const pMinutes = this.getEffectiveMinutes(p, now);
+      const pHours = Math.floor(pMinutes / 60);
+      const pMin = pMinutes % 60;
+      const list = legacyDayGroups.get(day) || [];
+      list.push({
+        id: p.id,
+        boothId: p.booth_id,
+        boothName: boothMap.get(p.booth_id) || 'Plantão removido',
+        checkInAt: p.check_in_at,
+        checkOutAt: p.check_out_at,
+        lastConfirmedAt: p.last_confirmed_at,
+        accumulatedMinutes: p.status === 'invalidated' ? 0 : pMinutes,
+        hoursFormatted: p.status === 'invalidated' ? '0h 0m' : `${pHours}h ${pMin}m`,
+        roletaName: p.roleta_name || '—',
+        roletaEntryType: p.roleta_entry_type || '—',
+        roletaPosition: p.roleta_position ?? null,
+        status: p.status,
+        attendedByUserId: p.attended_by_user_id || null,
+      });
+      legacyDayGroups.set(day, list);
+    }
 
     return {
-      broker: {
-        id: broker.id,
-        name: broker.name,
-        nomeGuerra: broker.nome_guerra || broker.name,
-        creci: broker.creci || null,
-        brokerStage: broker.broker_stage || 'corretor_creci',
-        managerId: broker.manager_id,
-        managerName: broker.manager_id ? (managerMap.get(broker.manager_id) || 'Sem Gerente') : 'Sem Gerente',
-        status: broker.status,
-        approvedByHr: broker.approved_by_hr,
-        carenciaEndsAt: broker.carencia_ends_at,
-        stageExpiresAt: broker.stage_expires_at,
-        createdAt: broker.created_at,
-        lastCheckinAt: broker.last_checkin_at,
-      },
-      period: {
-        startDate: startDate.toISOString().split('T')[0],
-        endDate: endDate.toISOString().split('T')[0],
-      },
+      broker: brokerInfo,
+      period: periodInfo,
       summary: {
         totalCheckIns,
         completedCount,
@@ -1737,16 +1877,15 @@ export class PresencesService {
         onlineCount,
         pontualCount,
         posBarraCount,
-        foraJanelaCount,
         totalMinutes,
         totalHoursFormatted: `${hours}h ${minutes}m`,
         punctualityRate,
         validationRate,
         activeDays,
       },
-      attendanceSummary,
-      attendances,
-      days,
+      days: Array.from(legacyDayGroups.entries())
+        .map(([date, entries]) => ({ date, entries }))
+        .sort((a, b) => (a.date < b.date ? -1 : 1)),
     };
   }
 
@@ -1850,16 +1989,18 @@ export class PresencesService {
     // Respeita fielmente a janela da roleta do momento (mesma lógica do check-in normal)
     const { ruleSet, matchingRoleta, roletaTimes, earlyMinutes, posBarraMinutes } = await this.resolveRoletaForBooth(booth);
 
-    // Estágio permitido nas regras vigentes do plantão. Se não estiver liberado, registra como
-    // "fora da janela" (atendimento possível, sem validação de período e sem sequência).
+    // Estágio permitido nas regras vigentes do plantão.
     const allowedStages: string[] = (ruleSet as any).allowed_broker_stages ?? ALL_BROKER_STAGES;
     const stageAllowed =
       Array.isArray(allowedStages) &&
       allowedStages.length > 0 &&
       allowedStages.includes(broker.broker_stage || 'corretor_creci');
 
-    // NOVA REGRA: o check-in manual da Recepção também respeita o novo fluxo — fora da janela de
-    // validade ou com estágio não liberado, registra presença "fora da janela" (sem validação).
+    // NOVA IDENTIDADE: o check-in manual da Recepção também respeita o novo fluxo — fora da janela
+    // de validade ou com estágio não liberado, registra presença "fora da janela" (sem validação).
+    // Legado: o check-in manual rejeita fora da janela/estágio (exceto reaproveitando a roleta de
+    // outra presença ativa no plantão, comportando-se como "pós-barra").
+    const novaIdentidade = await this.isNovaIdentidade(tenantId);
     const isOutOfWindow = !matchingRoleta || !stageAllowed;
 
     const now = new Date();
@@ -1868,21 +2009,104 @@ export class PresencesService {
     let roletaAnchor: Date | null = null;
     let assignedPosition: number | null = null;
 
-    if (!isOutOfWindow) {
-      const tzNowForRoleta = getNowInTimezone('America/Sao_Paulo');
-      roletaAnchor = getDateAtTimeInTimezone(
-        tzNowForRoleta.dateStr,
-        minutesToTimeString(matchingRoleta!.roletaMinutes),
-      );
+    if (novaIdentidade) {
+      if (isOutOfWindow) {
+        assignedEntryType = 'fora_janela';
+        assignedRoletaName = matchingRoleta?.name || null;
+        roletaAnchor = null; // Sem âncora de validação → sempre finaliza invalidado
+      } else {
+        const tzNowForRoleta = getNowInTimezone('America/Sao_Paulo');
+        roletaAnchor = getDateAtTimeInTimezone(
+          tzNowForRoleta.dateStr,
+          minutesToTimeString(matchingRoleta!.roletaMinutes),
+        );
 
-      if (matchingRoleta!.isPontual) {
+        if (matchingRoleta!.isPontual) {
+          assignedEntryType = 'pontual';
+          assignedPosition = null; // Aguarda o sorteio automático
+        } else {
+          assignedEntryType = 'pos_barra';
+          // Pós-Barra entra no final da fila, contando também os pontuais ainda sem posição.
+          const existingInBooth = await this.presenceRepository.find({
+            where: { booth_id: booth.id, tenant_id: tenantId, status: 'online', roleta_name: assignedRoletaName! },
+          });
+          const positionedCount = existingInBooth.filter((p) => p.roleta_position !== null).length;
+          const unplacedPontualCount = existingInBooth.filter(
+            (p) => p.roleta_position === null && p.roleta_entry_type === 'pontual',
+          ).length;
+          assignedPosition = positionedCount + unplacedPontualCount + 1;
+        }
+      }
+    } else {
+      // ===== COMPORTAMENTO LEGADO (flag de nova identidade desligado) =====
+      if (!Array.isArray(allowedStages) || allowedStages.length === 0) {
+        throw new BadRequestException(
+          `Check-in bloqueado. O plantão '${booth.name}' não está liberado para nenhum estágio neste momento. Contate a Diretoria.`,
+        );
+      }
+      if (!stageAllowed) {
+        throw new BadRequestException(
+          `Check-in bloqueado. O plantão '${booth.name}' não está liberado para corretores em fase '${broker.broker_stage || 'treinamento'}'. Fases liberadas: ${allowedStages.join(', ')}.`,
+        );
+      }
+
+      let roletaName = matchingRoleta?.name || null;
+      if (!roletaName) {
+        // Sem roleta aberta, tenta reutilizar a roleta de outra presença ativa no plantão.
+        const activeInBooth = await this.presenceRepository.find({
+          where: { booth_id: booth.id, tenant_id: tenantId, status: 'online', attended_at: IsNull() },
+        });
+        if (activeInBooth.length === 0) {
+          const allowedWindows = roletaTimes.map((r) => {
+            const roletaMin = timeStringToMinutes(r.time);
+            const earlyStr = minutesToTimeString(roletaMin - earlyMinutes);
+            const drawStr = minutesToTimeString(roletaMin + 1);
+            const endStr = minutesToTimeString(roletaMin + posBarraMinutes);
+            return `${r.name} (Check-in das ${earlyStr} às ${endStr} · Sorteio às ${drawStr})`;
+          }).join(' | ');
+          throw new BadRequestException(
+            `Check-in fora do horário permitido para o plantão '${booth.name}'. Janelas de Check-in hoje: ${allowedWindows}.`,
+          );
+        }
+
+        // Roleta mais comum entre as presenças ativas (fallback do nome da roleta).
+        const roletaCounts = new Map<string, number>();
+        let mostActiveName: string | null = null;
+        let mostActiveCount = 0;
+        for (const p of activeInBooth) {
+          if (!p.roleta_name) continue;
+          const count = (roletaCounts.get(p.roleta_name) || 0) + 1;
+          roletaCounts.set(p.roleta_name, count);
+          if (count > mostActiveCount) {
+            mostActiveCount = count;
+            mostActiveName = p.roleta_name;
+          }
+        }
+        if (!mostActiveName) {
+          throw new BadRequestException(
+            `Check-in fora do horário permitido para o plantão '${booth.name}'. Janelas de Check-in hoje: ${roletaTimes.map((r) => {
+              const roletaMin = timeStringToMinutes(r.time);
+              return `${r.name} (das ${minutesToTimeString(roletaMin - earlyMinutes)} às ${minutesToTimeString(roletaMin + posBarraMinutes)})`;
+            }).join(' | ')}.`,
+          );
+        }
+        roletaName = mostActiveName;
+      }
+
+      assignedRoletaName = roletaName;
+      const tzNowForRoleta = getNowInTimezone('America/Sao_Paulo');
+      roletaAnchor = matchingRoleta
+        ? getDateAtTimeInTimezone(tzNowForRoleta.dateStr, minutesToTimeString(matchingRoleta.roletaMinutes))
+        : now;
+
+      if (matchingRoleta?.isPontual) {
         assignedEntryType = 'pontual';
         assignedPosition = null; // Aguarda o sorteio automático
       } else {
         assignedEntryType = 'pos_barra';
-        // Pós-Barra entra no final da fila, contando também os pontuais ainda sem posição.
+        // Entra no final da fila, contando também os pontuais ainda sem posição.
         const existingInBooth = await this.presenceRepository.find({
-          where: { booth_id: booth.id, tenant_id: tenantId, status: 'online', roleta_name: assignedRoletaName! },
+          where: { booth_id: booth.id, tenant_id: tenantId, status: 'online', roleta_name: roletaName },
         });
         const positionedCount = existingInBooth.filter((p) => p.roleta_position !== null).length;
         const unplacedPontualCount = existingInBooth.filter(
@@ -2031,6 +2255,40 @@ export class PresencesService {
       throw new BadRequestException('Só é possível convocar corretores com presença online no plantão.');
     }
 
+    // Nova identidade: convocação avulsa (Fora a vez — paciência: o fluxo novo registra o
+    // atendimento sem remover o corretor da fila). Legado: registra atendido e REMOVE da fila.
+    if (!(await this.isNovaIdentidade(tenantId))) {
+      if (presence.attended_at) {
+        return {
+          message: `O corretor '${presence.broker?.nome_guerra || ''}' já foi atendido nesta roleta.`,
+          servedAt: presence.attended_at,
+          alreadyServed: true,
+        };
+      }
+
+      presence.attended_at = new Date();
+      presence.attended_by_user_id = actor.sub;
+      await this.presenceRepository.save(presence);
+
+      this.realtimeService.publish({
+        eventType: 'presence.served',
+        tenantId,
+        aggregateId: presence.id,
+        payload: {
+          presenceId: presence.id,
+          brokerId: presence.broker_id,
+          boothId: presence.booth_id,
+          attendedAt: presence.attended_at,
+          attendedBy: actor.sub,
+        },
+      });
+
+      return {
+        message: `Corretor '${presence.broker?.nome_guerra || ''}' atendido. O próximo da fila foi convocado.`,
+        servedAt: presence.attended_at,
+      };
+    }
+
     // Atualiza a última confirmação do ping pendente (o corretor está presente no plantão)
     const pendingPing = await this.logRepository.findOne({
       where: { presence_id: presence.id, response_status: 'pending' },
@@ -2074,6 +2332,10 @@ export class PresencesService {
   // Atendimento VEZ: somente para o PRIMEIRO corretor da sequência da roleta. Após atender,
   // ele retorna ao FINAL da fila (rotação) e segue online até encerrar o período/check-out.
   async attendVez(actor: { sub: string; role: string }, tenantId: string, presenceId: string) {
+    if (!(await this.isNovaIdentidade(tenantId))) {
+      throw new ForbiddenException('O atendimento "vez" é exclusivo da nova identidade.');
+    }
+
     const presence = await this.presenceRepository.findOne({
       where: { id: presenceId, tenant_id: tenantId },
       relations: { broker: true },
@@ -2092,7 +2354,7 @@ export class PresencesService {
       throw new BadRequestException('Este corretor está fora da sequência da roleta. Use o botão "Atendimento" para convocá-lo.');
     }
 
-    const queue = await this.getEffectiveQueue(presence.booth_id, tenantId, presence.roleta_name);
+    const queue = await this.getEffectiveQueue(presence.booth_id, tenantId, presence.roleta_name, true);
     const first = queue[0];
     if (!first || first.presenceId !== presenceId) {
       const primeiroNome = first?.nomeGuerra || '—';
@@ -2139,6 +2401,10 @@ export class PresencesService {
     tenantId: string,
     filters: { startDate?: string; endDate?: string; boothId?: string; brokerId?: string } = {},
   ) {
+    if (!(await this.isNovaIdentidade(tenantId))) {
+      throw new ForbiddenException('A listagem de atendimentos é exclusiva da nova identidade.');
+    }
+
     const canViewAll = ['diretoria_level_1', 'platform_admin_level_0', 'rh_level_2', 'rh_level_1', 'recepcao_level_3'].includes(actor.role);
     if (!canViewAll && actor.role !== 'corretor_level_3') {
       throw new ForbiddenException('Acesso restrito aos registros de atendimento.');
@@ -2200,8 +2466,10 @@ export class PresencesService {
     };
   }
 
-  // Fila unificada e recalculada: desconsidera corretores já atendidos e recalcula a posição efetiva
-  private async getEffectiveQueue(boothId: string, tenantId: string, roletaName: string) {
+  // Fila unificada e recalculada: desconsidera corretores já atendidos e recalcula a posição efetiva.
+  // rotationOrder (nova identidade): ordena primeiro por vez_rotations (quem atendeu menos na
+  // frente); legado mantém a ordenação original por posição da roleta/horário de check-in.
+  private async getEffectiveQueue(boothId: string, tenantId: string, roletaName: string, rotationOrder = false) {
     const queuePresences = await this.presenceRepository.find({
       where: {
         booth_id: boothId,
@@ -2213,13 +2481,12 @@ export class PresencesService {
       relations: { broker: true },
     });
 
-    // Rotação "Atendimento vez": cada vez que o primeiro atende, ele volta para o ÚLTIMO da fila
-    // (vez_rotations +1). A ordenação prioriza quem tem MENOS rotações, e dentro do mesmo nível
-    // segue a posição da roleta (pontual/pós-barra) e o horário de check-in.
     const sortedQueue = queuePresences.sort((a, b) => {
-      const aRot = a.vez_rotations ?? 0;
-      const bRot = b.vez_rotations ?? 0;
-      if (aRot !== bRot) return aRot - bRot;
+      if (rotationOrder) {
+        const aRot = a.vez_rotations ?? 0;
+        const bRot = b.vez_rotations ?? 0;
+        if (aRot !== bRot) return aRot - bRot;
+      }
       const aPos = a.roleta_position ?? Number.MAX_SAFE_INTEGER;
       const bPos = b.roleta_position ?? Number.MAX_SAFE_INTEGER;
       if (aPos === bPos) {
@@ -2256,34 +2523,38 @@ export class PresencesService {
       boothName: booth.name,
       currentRoleta: null,
       queue: [],
-      outOfWindow: [],
       awaitingRevalidation: [],
     };
 
+    const novaIdentidade = await this.isNovaIdentidade(tenantId);
     const { matchingRoleta } = await this.resolveRoletaForBooth(booth);
 
     // Corretores online "fora da janela" (check-in livre fora do horário/estágio da roleta):
     // aparecem numa seção à parte para a Recepção atendê-los (Atendimento), mas SEM entrar na
     // sequência oficial. Só é convocado com o botão comum, nunca com "Atendimento vez".
-    const outOfWindowPresences = await this.presenceRepository.find({
-      where: {
-        booth_id: booth.id,
-        tenant_id: tenantId,
-        status: 'online',
-        roleta_entry_type: 'fora_janela',
-      },
-      relations: { broker: true },
-      order: { check_in_at: 'ASC' },
-    });
-    const outOfWindow = outOfWindowPresences.map((p) => ({
-      presenceId: p.id,
-      brokerId: p.broker_id,
-      nomeGuerra: p.broker?.nome_guerra || 'Corretor',
-      roletaEntryType: p.roleta_entry_type,
-      isFirst: false,
-      minutesActive: Math.max(0, Math.floor((Date.now() - new Date(p.validation_starts_at || p.check_in_at).getTime()) / 1000 / 60)),
-      checkInAt: p.check_in_at,
-    }));
+    // Recurso EXCLUSIVO da nova identidade — no legado o check-in fora da janela nem é aceito.
+    let outOfWindow: any[] = [];
+    if (novaIdentidade) {
+      const outOfWindowPresences = await this.presenceRepository.find({
+        where: {
+          booth_id: booth.id,
+          tenant_id: tenantId,
+          status: 'online',
+          roleta_entry_type: 'fora_janela',
+        },
+        relations: { broker: true },
+        order: { check_in_at: 'ASC' },
+      });
+      outOfWindow = outOfWindowPresences.map((p) => ({
+        presenceId: p.id,
+        brokerId: p.broker_id,
+        nomeGuerra: p.broker?.nome_guerra || 'Corretor',
+        roletaEntryType: p.roleta_entry_type,
+        isFirst: false,
+        minutesActive: Math.max(0, Math.floor((Date.now() - new Date(p.validation_starts_at || p.check_in_at).getTime()) / 1000 / 60)),
+        checkInAt: p.check_in_at,
+      }));
+    }
 
     // Fora da janela de check-in/pós-barra não há roleta resolvida, mas corretores que já estão
     // online no plantão AINDA aguardam atendimento. Mantém a sequência de atendimento visível,
@@ -2312,10 +2583,10 @@ export class PresencesService {
     }
 
     if (!roletaName) {
-      return { ...emptyQueue, outOfWindow };
+      return novaIdentidade ? { ...emptyQueue, outOfWindow } : emptyQueue;
     }
 
-    const queue = await this.getEffectiveQueue(booth.id, tenantId, roletaName);
+    const queue = await this.getEffectiveQueue(booth.id, tenantId, roletaName, novaIdentidade);
 
     const awaitingRevalidation = await this.presenceRepository.find({
       where: {
@@ -2328,7 +2599,7 @@ export class PresencesService {
       order: { check_in_at: 'ASC' },
     });
 
-    return {
+    const queueResponse: any = {
       boothId: booth.id,
       boothName: booth.name,
       currentRoleta: {
@@ -2337,7 +2608,6 @@ export class PresencesService {
         phase: matchingRoleta?.isPontual ? 'aguardando_sorteio' : 'apos_sorteio',
       },
       queue,
-      outOfWindow,
       awaitingRevalidation: awaitingRevalidation.map((p) => ({
         presenceId: p.id,
         brokerId: p.broker_id,
@@ -2346,6 +2616,8 @@ export class PresencesService {
         checkInAt: p.check_in_at,
       })),
     };
+    if (novaIdentidade) queueResponse.outOfWindow = outOfWindow;
+    return queueResponse;
   }
 
   // 13. RELATÓRIO EXECUTIVO EM TEMPO REAL: Torre de Controle da Diretoria

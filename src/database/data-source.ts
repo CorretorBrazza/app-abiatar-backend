@@ -38,6 +38,7 @@ import { AddSessionVersionByDeviceType1787000016000 } from './migrations/1787000
 import { AddAttendanceRecordsAndVezRotation1787000018000 } from './migrations/1787000018000-AddAttendanceRecordsAndVezRotation';
 import { AddCrmDeliveriesAndAttendanceTipo1787000019000 } from './migrations/1787000019000-AddCrmDeliveriesAndAttendanceTipo';
 import { MoveAbiatarManagersToProdTenant1787000020000 } from './migrations/1787000020000-MoveAbiatarManagersToProdTenant';
+import { RevertMoveAbiatarManagersBack1787000021000 } from './migrations/1787000021000-RevertMoveAbiatarManagersBack';
 
 export const AppDataSource = new DataSource({
   type: 'postgres',
@@ -82,6 +83,7 @@ export const AppDataSource = new DataSource({
     AddAttendanceRecordsAndVezRotation1787000018000,
     AddCrmDeliveriesAndAttendanceTipo1787000019000,
     MoveAbiatarManagersToProdTenant1787000020000,
+    RevertMoveAbiatarManagersBack1787000021000,
   ],
   migrationsRun: false,
   migrationsTransactionMode: 'each',

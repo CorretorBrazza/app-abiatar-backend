@@ -37,6 +37,7 @@ import { AddDeviceTypeToPushTokens1787000015000 } from './migrations/17870000150
 import { AddSessionVersionByDeviceType1787000016000 } from './migrations/1787000016000-AddSessionVersionByDeviceType';
 import { AddAttendanceRecordsAndVezRotation1787000018000 } from './migrations/1787000018000-AddAttendanceRecordsAndVezRotation';
 import { AddCrmDeliveriesAndAttendanceTipo1787000019000 } from './migrations/1787000019000-AddCrmDeliveriesAndAttendanceTipo';
+import { MoveAbiatarManagersToProdTenant1787000020000 } from './migrations/1787000020000-MoveAbiatarManagersToProdTenant';
 
 export const AppDataSource = new DataSource({
   type: 'postgres',
@@ -80,6 +81,7 @@ export const AppDataSource = new DataSource({
     AddSessionVersionByDeviceType1787000016000,
     AddAttendanceRecordsAndVezRotation1787000018000,
     AddCrmDeliveriesAndAttendanceTipo1787000019000,
+    MoveAbiatarManagersToProdTenant1787000020000,
   ],
   migrationsRun: false,
   migrationsTransactionMode: 'each',

@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Patch,
+  Delete,
   Body,
   Param,
   Query,
@@ -170,6 +171,19 @@ export class DevController {
   ) {
     this.ensureDevAuthenticated(authHeader);
     return this.devService.setUserStatus(id, status);
+  }
+
+  /**
+   * SuperAdmin: Exclusão física (hard delete) de um usuário de toda a base.
+   * Libera Nome de Guerra e e-mail para reutilização.
+   */
+  @Delete('users/:id')
+  async hardDeleteUser(
+    @Param('id') id: string,
+    @Headers('authorization') authHeader?: string,
+  ) {
+    this.ensureDevAuthenticated(authHeader);
+    return this.devService.hardDeleteUser(id);
   }
 
   /**

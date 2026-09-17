@@ -779,6 +779,78 @@ export class DevService {
   }
 
   /**
+   * Painel DEV: Exclusão física (hard delete) de qualquer usuário de toda a base.
+   *
+   * Apaga também todas as referências que não possuem FK com CASCADE no banco:
+   *  - corretores/equipe que apontavam para este usuário como gerente (manager_id);
+   *  - atribuições de recepção (booth_receptionists);
+   *  - atendimentos registrados (presences.attended_by_user_id).
+   *
+   * As demais referências (presenças, mensagens, convites, push tokens,
+   * booths/regras de plantão) já são tratadas pelas FKs existentes
+   * (CASCADE/SET NULL).
+   */
+  async hardDeleteUser(id: string) {
+    const user = await this.userRepo.findOne({ where: { id } });
+    if (!user) throw new NotFoundException('Usuário não localizado.');
+    if (user.role === 'platform_admin_level_0') {
+      throw new BadRequestException('Proteção do SuperAdmin: não é possível excluir o acesso de nível zero pelo painel dev.');
+    }
+
+    const beforeInfo = {
+      id: user.id,
+      tenant_id: user.tenant_id,
+      name: user.name,
+      nome_guerra: user.nome_guerra,
+      email: user.email,
+      role: user.role,
+      status: user.status,
+      manager_id: user.manager_id,
+    };
+
+    const sql = this.dataSource.createQueryRunner();
+    try {
+      await sql.connect();
+      await sql.startTransaction();
+
+      await sql.query(`UPDATE "users" SET "manager_id" = NULL WHERE "manager_id" = $1`, [id]);
+      await sql.query(`DELETE FROM "booth_receptionists" WHERE "receptionist_id" = $1`, [id]);
+      await sql.query(`UPDATE "presences" SET "attended_by_user_id" = NULL WHERE "attended_by_user_id" = $1`, [id]);
+
+      await sql.query(`DELETE FROM "users" WHERE "id" = $1`, [id]);
+
+      await sql.commitTransaction();
+    } catch (err) {
+      await sql.rollbackTransaction().catch(() => undefined);
+      throw err;
+    } finally {
+      await sql.release();
+    }
+
+    const log = this.auditRepo.create({
+      tenant_id: user.tenant_id,
+      actor_user_id: null,
+      actor_role: 'platform_admin_level_0',
+      actor_email_snapshot: 'platform_admin@abiatar.bitimob.com.br',
+      action: 'superadmin.user_hard_deleted',
+      session_id: 'dev-console',
+      entity_type: 'user',
+      entity_id: user.id,
+      before_data: beforeInfo,
+      after_data: { deleted: true },
+      success: true,
+      metadata: { reason: 'Exclusão física solicitada pelo SuperAdmin no painel dev' },
+    });
+    await this.auditRepo.save(log).catch((err) => this.logger.error(`[DevService] Falha ao gravar audit log: ${err.message}`));
+
+    return {
+      success: true,
+      message: `'${user.nome_guerra}' foi excluído definitivamente. Nome de Guerra e e-mail liberados para reutilização.`,
+      deletedUserId: user.id,
+    };
+  }
+
+  /**
    * Painel DEV: Perfil completo de um usuário com histórico de presenças
    */
   async getUserProfile(id: string) {

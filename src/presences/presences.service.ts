@@ -542,7 +542,7 @@ export class PresencesService {
         methodUsed = `GPS (${Math.round(distanceCalculated)}m)`;
       } else {
         throw new BadRequestException(
-          `Check-in recusado: você está a aproximadamente ${Math.round(distanceCalculated)}m do plantão. O raio permitido é de ${allowedRadius}m. Aproxime-se do estande ou conecte-se ao Wi-Fi oficial do plantão.`,
+          `Check-in recusado: você está a aproximadamente ${Math.round(distanceCalculated)}m do plantão. O raio permitido é de ${allowedRadius}m. Reveja as informações de geolocalização do seu aparelho ou acesse via QR code junto à recepção.`,
         );
       }
     }

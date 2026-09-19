@@ -13,6 +13,7 @@ import { OnboardingLink } from '../users/entities/onboarding-link.entity';
 import { Presence } from '../presences/entities/presence.entity';
 import { AttendanceRecord } from '../presences/entities/attendance-record.entity';
 import { CrmDelivery } from '../presences/entities/crm-delivery.entity';
+import { QrCode } from '../presences/entities/qr-code.entity';
 import { DeadManLog } from '../presences/entities/dead-man-log.entity';
 import { Message } from '../messages/entities/message.entity';
 import { MessageRecipient } from '../messages/entities/message-recipient.entity';
@@ -39,6 +40,7 @@ import { AddAttendanceRecordsAndVezRotation1787000018000 } from './migrations/17
 import { AddCrmDeliveriesAndAttendanceTipo1787000019000 } from './migrations/1787000019000-AddCrmDeliveriesAndAttendanceTipo';
 import { MoveAbiatarManagersToProdTenant1787000020000 } from './migrations/1787000020000-MoveAbiatarManagersToProdTenant';
 import { RevertMoveAbiatarManagersBack1787000021000 } from './migrations/1787000021000-RevertMoveAbiatarManagersBack';
+import { QrCodeCheckIn1787000022000 } from './migrations/1787000022000-QrCodeCheckIn';
 
 export const AppDataSource = new DataSource({
   type: 'postgres',
@@ -56,6 +58,7 @@ export const AppDataSource = new DataSource({
     Presence,
     AttendanceRecord,
     CrmDelivery,
+    QrCode,
     DeadManLog,
     Message,
     MessageRecipient,
@@ -84,6 +87,7 @@ export const AppDataSource = new DataSource({
     AddCrmDeliveriesAndAttendanceTipo1787000019000,
     MoveAbiatarManagersToProdTenant1787000020000,
     RevertMoveAbiatarManagersBack1787000021000,
+    QrCodeCheckIn1787000022000,
   ],
   migrationsRun: false,
   migrationsTransactionMode: 'each',

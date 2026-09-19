@@ -2,10 +2,13 @@ import { Injectable, BadRequestException, NotFoundException, ForbiddenException 
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, IsNull, Between, In, Not } from 'typeorm';
 import { Cron, CronExpression } from '@nestjs/schedule'; // Importa o decorador de tarefas agendadas
+import { createHmac, timingSafeEqual } from 'crypto';
+import QRCode from 'qrcode';
 
 import { Presence } from './entities/presence.entity';
 import { AttendanceRecord } from './entities/attendance-record.entity';
 import { CrmDelivery } from './entities/crm-delivery.entity';
+import { QrCode } from './entities/qr-code.entity';
 import { Tenant } from '../tenants/tenant.entity';
 import { User } from '../users/user.entity';
 import { Booth } from '../booths/entities/booth.entity';
@@ -52,6 +55,9 @@ export class PresencesService {
 
     @InjectRepository(DeadManLog)
     private logRepository: Repository<DeadManLog>,
+
+    @InjectRepository(QrCode)
+    private qrCodeRepository: Repository<QrCode>,
 
     @InjectRepository(AttendanceRecord)
     private attendanceRepository: Repository<AttendanceRecord>,
@@ -462,9 +468,21 @@ export class PresencesService {
       throw new BadRequestException('Check-in bloqueado. Seu cadastro está inativo ou suspenso. Contate a Diretoria.');
     }
 
-    // B. Busca o plantão de vendas solicitado e suas regras vigentes
+    // B. Via QR da Recepção: quando um qrToken/código é informado, o plantão vem do próprio
+    // token (assinado pelo backend) e a validação de proximidade GPS/Wi-Fi é dispensada,
+    // pois a Recepção é quem liberou o código no plantão.
+    const qrResolution = dto.qrToken || dto.code
+      ? await this.resolveQrCode({ qrToken: dto.qrToken, code: dto.code }, tenantId)
+      : null;
+
+    if (qrResolution) {
+      dto.boothId = qrResolution.boothId;
+    } else if (!dto.boothId) {
+      throw new BadRequestException('O plantão é obrigatório para o check-in.');
+    }
+
     const booth = await this.boothRepository.findOne({
-      where: { id: dto.boothId, tenant_id: tenantId },
+      where: { id: dto.boothId as string, tenant_id: tenantId },
       relations: { wifis: true },
     });
 
@@ -488,11 +506,16 @@ export class PresencesService {
       allowedStages.length > 0 &&
       allowedStages.includes(brokerUser.broker_stage || 'corretor_creci');
 
-    // C. Validação de Proximidade (DUPLA CAMADA: Wi-Fi do Plantão ou GPS) [7]
+    // C. Validação de Proximidade (DUPLA CAMADA: Wi-Fi do Plantão ou GPS) [7].
+    // No check-in via QR da Recepção, a proximidade é dispensada (método 'qrcode').
     let isLocationValid = false;
     let methodUsed = '';
     let distanceCalculated = 0;
 
+    if (qrResolution) {
+      isLocationValid = true;
+      methodUsed = 'QR Code da Recepção';
+    } else {
     // 1ª Camada: Validação por BSSID/SSID de Wi-Fi Cadastrado no Plantão
     if (dto.ssid && booth.wifis && booth.wifis.length > 0) {
       const userSsid = dto.ssid;
@@ -545,6 +568,7 @@ export class PresencesService {
           `Check-in recusado: você está a aproximadamente ${Math.round(distanceCalculated)}m do plantão. O raio permitido é de ${allowedRadius}m. Reveja as informações de geolocalização do seu aparelho ou acesse via QR code junto à recepção.`,
         );
       }
+    }
     }
 
     if (!isLocationValid) {
@@ -663,6 +687,9 @@ export class PresencesService {
       );
     }
 
+    // Hierarquia do método de check-in registrado: recepcao > qrcode > wifi/gps.
+    const checkInMethod = qrResolution ? 'qrcode' : methodUsed.startsWith('Wi-Fi') ? 'wifi' : 'gps';
+
     const presence = this.presenceRepository.create({
       tenant_id: tenantId,
       broker_id: brokerId,
@@ -671,6 +698,7 @@ export class PresencesService {
       minimum_period_minutes: ruleSet.minimum_period_minutes,
       period_weight: ruleSet.period_weight,
       minimum_monthly_periods: ruleSet.minimum_monthly_periods,
+      check_in_method: checkInMethod,
       roleta_name: assignedRoletaName,
       roleta_entry_type: assignedEntryType,
       roleta_position: assignedPosition,
@@ -703,6 +731,140 @@ export class PresencesService {
       distanceInMeters: Math.round(distanceCalculated),
       outOfWindow: savedPresence.roleta_entry_type === 'fora_janela',
     };
+  }
+
+  /** Gera (ou reusa) o QR de check-in do dia para um plantão. Somente quem opera o plantão. */
+  async generateQrCode(
+    actor: { sub: string; role: string },
+    tenantId: string,
+    boothId: string,
+  ) {
+    await this.assertCanOperateBooth(actor, tenantId, boothId);
+
+    const booth = await this.boothRepository.findOne({ where: { id: boothId, tenant_id: tenantId } });
+    if (!booth) {
+      throw new NotFoundException('Plantão de vendas não localizado.');
+    }
+
+    const todayStr = getNowInTimezone('America/Sao_Paulo').dateStr;
+    const expiresAt = getDateAtTimeInTimezone(todayStr, '23:59:59');
+
+    const token = this.signQrToken(tenantId, boothId, todayStr);
+    const code = this.buildShortCode(tenantId, boothId, todayStr);
+
+    let row = await this.qrCodeRepository.findOne({
+      where: { tenant_id: tenantId, booth_id: boothId, valid_for_date: todayStr },
+    });
+    if (!row) {
+      row = this.qrCodeRepository.create({
+        tenant_id: tenantId,
+        booth_id: boothId,
+        token,
+        code,
+        valid_for_date: todayStr,
+        expires_at: expiresAt,
+        generated_by: actor.sub,
+      });
+      await this.qrCodeRepository.save(row);
+    }
+
+    const frontendUrl = process.env.FRONTEND_URL || 'https://abiatar.bitimob.com.br';
+    const content = `${frontendUrl}/?qr=${encodeURIComponent(row.token)}`;
+    const qrDataUrl = await QRCode.toDataURL(content, { width: 320, margin: 1 });
+
+    return {
+      content,
+      qrDataUrl,
+      code: row.code,
+      validForDate: todayStr,
+      expiresAt: expiresAt.toISOString(),
+    };
+  }
+
+  /** Valida o token/código do QR e devolve o plantão vinculado ao dia corrente (fuso SP). */
+  private async resolveQrCode(
+    input: { qrToken?: string; code?: string },
+    tenantId: string,
+  ): Promise<{ boothId: string }> {
+    if (!input.qrToken && !input.code) {
+      throw new BadRequestException('Informe o QR ou o código da Recepção para o check-in.');
+    }
+
+    const todayStr = getNowInTimezone('America/Sao_Paulo').dateStr;
+
+    if (input.qrToken) {
+      const boothId = this.verifyQrToken(input.qrToken, tenantId, todayStr);
+      return { boothId };
+    }
+
+    const code = String(input.code).trim().toUpperCase();
+    const row = await this.qrCodeRepository.findOne({
+      where: { code, tenant_id: tenantId, valid_for_date: todayStr },
+    });
+    if (!row) {
+      throw new BadRequestException('Código inválido ou expirado. Solicite um novo código à Recepção.');
+    }
+    return { boothId: row.booth_id };
+  }
+
+  private getQrSecret(): string {
+    const secret = process.env.QR_TOKEN_SECRET || process.env.JWT_SECRET;
+    if (!secret) throw new Error('QR_TOKEN_SECRET/JWT_SECRET não configurado.');
+    return secret;
+  }
+
+  private signQrToken(tenantId: string, boothId: string, dateStr: string): string {
+    const payload = Buffer.from(
+      JSON.stringify({ tenant_id: tenantId, booth_id: boothId, date: dateStr }),
+    ).toString('base64url');
+    const signature = createHmac('sha256', this.getQrSecret())
+      .update(`QRv1.${payload}`)
+      .digest('base64url');
+    return `QRv1.${payload}.${signature}`;
+  }
+
+  private verifyQrToken(token: string, tenantId: string, dateStr: string): string {
+    const parts = String(token).split('.');
+    if (parts.length !== 3 || parts[0] !== 'QRv1') {
+      throw new BadRequestException('QR inválido. Solicite um novo código à Recepção.');
+    }
+    const payloadB64 = parts[1];
+    const signatureB64 = parts[2];
+
+    const expected = createHmac('sha256', this.getQrSecret()).update(`QRv1.${payloadB64}`).digest();
+    let provided: Buffer;
+    try {
+      provided = Buffer.from(signatureB64, 'base64url');
+    } catch {
+      throw new BadRequestException('QR inválido. Solicite um novo código à Recepção.');
+    }
+    if (expected.length !== provided.length || !timingSafeEqual(expected, provided)) {
+      throw new BadRequestException('QR inválido. Solicite um novo código à Recepção.');
+    }
+
+    let payload: { tenant_id: string; booth_id: string; date: string };
+    try {
+      payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8'));
+    } catch {
+      throw new BadRequestException('QR inválido. Solicite um novo código à Recepção.');
+    }
+
+    if (payload.tenant_id !== tenantId || payload.date !== dateStr) {
+      throw new BadRequestException('QR inválido ou expirado. Solicite um novo código à Recepção.');
+    }
+    return payload.booth_id;
+  }
+
+  private buildShortCode(tenantId: string, boothId: string, dateStr: string): string {
+    const alphabet = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+    const hex = createHmac('sha256', this.getQrSecret())
+      .update(`QRCODE.${tenantId}.${boothId}.${dateStr}`)
+      .digest('hex');
+    let code = '';
+    for (let i = 0; i < 8; i++) {
+      code += alphabet[parseInt(hex.substr(i * 2, 2), 16) % alphabet.length];
+    }
+    return code;
   }
 
   private async resolveRoletaForBooth(booth: Booth): Promise<{
@@ -2237,6 +2399,7 @@ export class PresencesService {
       roleta_name: assignedRoletaName,
       roleta_entry_type: assignedEntryType,
       roleta_position: assignedPosition,
+      check_in_method: 'recepcao',
       validation_starts_at: roletaAnchor,
       check_in_at: now,
       last_confirmed_at: now,

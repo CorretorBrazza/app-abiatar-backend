@@ -82,6 +82,9 @@ export class Presence {
   @Column({ type: 'timestamp', nullable: true })
   validation_starts_at: Date | null; // Horário a partir do qual contam os 120 min
 
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  check_in_method: string | null; // 'recepcao' | 'qrcode' | 'wifi' | 'gps'
+
   @Column({ type: 'timestamp', nullable: true })
   attended_at: Date | null; // Atendimento realizado pela Recepção (Plano B)
 

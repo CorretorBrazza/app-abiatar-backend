@@ -193,6 +193,17 @@ export class PresencesController {
     return this.presencesService.forceCheckIn(currentUser, tenantId, dto);
   }
 
+  // QR de check-in da Recepção: gerado por quem opera aquele plantão (ou diretoria/gerência/admin).
+  @Get('qr-code/:boothId')
+  @UseGuards(JwtAuthGuard)
+  async generateQrCode(
+    @Param('boothId') boothId: string,
+    @CurrentUser() currentUser: { sub: string; role: string },
+    @TenantId() tenantId: string,
+  ) {
+    return this.presencesService.generateQrCode(currentUser, tenantId, boothId);
+  }
+
   // Revalidação de presença suspensa pela Recepção (hierarquia 0) — mantém a posição na roleta
   @Post('force-validate')
   @UseGuards(JwtAuthGuard)

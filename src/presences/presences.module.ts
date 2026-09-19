@@ -11,6 +11,7 @@ import { BoothRuleSet } from '../booths/entities/booth-rule-set.entity';
 import { BoothHoliday } from '../booths/entities/booth-holiday.entity';
 import { BoothSpecialSchedule } from '../booths/entities/booth-special-schedule.entity';
 import { DeadManLog } from './entities/dead-man-log.entity';
+import { QrCode } from './entities/qr-code.entity';
 import { Message } from '../messages/entities/message.entity';
 import { MessageRecipient } from '../messages/entities/message-recipient.entity';
 import { BoothReceptionist } from '../booths/entities/booth-receptionist.entity';
@@ -30,6 +31,7 @@ import { Tenant } from '../tenants/tenant.entity';
       BoothHoliday,
       BoothSpecialSchedule,
       DeadManLog, 
+      QrCode,
       Message,
       MessageRecipient,
       BoothReceptionist,

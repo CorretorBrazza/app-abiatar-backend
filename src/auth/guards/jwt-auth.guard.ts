@@ -28,12 +28,7 @@ export class JwtAuthGuard implements CanActivate {
       const user = await this.dataSource.getRepository(User).findOne({
         where: { id: payload.sub, tenant_id: payload.tenant_id },
       });
-      const currentSessionVersion =
-        payload.device_type === 'mobile'
-          ? user?.session_version_mobile || 0
-          : payload.device_type === 'web'
-          ? user?.session_version_web || 0
-          : user?.session_version || 0;
+      const currentSessionVersion = user?.session_version || 0;
       if (!user || user.removed_at || user.status === 'inactive' || currentSessionVersion !== (payload.session_version || 0)) {
         throw new UnauthorizedException('Sessão inválida: usuário removido, inativo ou sessão revogada.');
       }

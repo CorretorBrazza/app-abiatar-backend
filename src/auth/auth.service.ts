@@ -254,23 +254,16 @@ export class AuthService {
       throw new UnauthorizedException('A senha temporária expirou. Solicite uma nova redefinição à gestão.');
     }
 
-    // Define o conteúdo (payload) do token
+    // Define o conteúdo (payload) do token.
+    // Login NÃO revoga sessões anteriores: sessões web/mobile podem coexistir.
+    // A revogação continua via troca de senha, reset/recuperação e remoção de usuário.
     const deviceType = classifyDeviceType(dto.userAgent);
-    if (deviceType === 'mobile') {
-      user.session_version_mobile = (user.session_version_mobile || 0) + 1;
-    } else {
-      user.session_version_web = (user.session_version_web || 0) + 1;
-    }
-    await this.userRepository.save(user);
 
     const payload = {
       sub: user.id,
       tenant_id: user.tenant_id,
       role: user.role,
-      session_version:
-        deviceType === 'mobile'
-          ? user.session_version_mobile
-          : user.session_version_web,
+      session_version: user.session_version || 0,
       device_type: deviceType,
       must_change_password: !!user.must_change_password,
     };

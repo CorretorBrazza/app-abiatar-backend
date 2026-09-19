@@ -747,7 +747,8 @@ export class PresencesService {
     }
 
     const todayStr = getNowInTimezone('America/Sao_Paulo').dateStr;
-    const expiresAt = getDateAtTimeInTimezone(todayStr, '23:59:59');
+    // getDateAtTimeInTimezone aceita HH:MM (adiciona :00). Soma 59s p/ expirar em 23:59:59 do fuso SP.
+    const expiresAt = new Date(getDateAtTimeInTimezone(todayStr, '23:59').getTime() + 59_000);
 
     const token = this.signQrToken(tenantId, boothId, todayStr);
     const code = this.buildShortCode(tenantId, boothId, todayStr);
